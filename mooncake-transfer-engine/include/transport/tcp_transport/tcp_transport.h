@@ -44,6 +44,11 @@
 #include "ylt/coro_io/coro_io.hpp"
 
 namespace mooncake {
+namespace tcp_uring {
+class TcpUringBackend;
+class TcpZeroCopy;
+}  // namespace tcp_uring
+
 class TransferMetadata;
 struct ClientSession;
 class TcpContext;
@@ -92,6 +97,16 @@ class TcpTransport : public Transport {
 
     int allocateLocalSegmentID(int tcp_data_port);
 
+    // Starts the io_uring data plane and reports whether it took over. On
+    // failure the caller keeps the asio backend and io_backend_ is reset so
+    // ioBackend() reports what is actually serving the transport.
+    bool startUringBackend(int tcp_data_port);
+
+    // Routes one task group to the io_uring backend. Zero-length slices are
+    // completed here, exactly as the asio path does, so they never reach the
+    // wire.
+    void submitUring(std::vector<Slice *> slices);
+
     int registerLocalMemory(void *addr, size_t length,
                             const std::string &location, bool remote_accessible,
                             bool update_metadata);
@@ -125,6 +140,8 @@ class TcpTransport : public Transport {
     std::thread thread_;
     bool enable_connection_pool_ = true;
     IoBackend io_backend_ = IoBackend::ASIO;
+    std::shared_ptr<tcp_uring::TcpZeroCopy> zero_copy_;
+    std::unique_ptr<tcp_uring::TcpUringBackend> uring_;
 
     // Client-side bounded work queues and fixed connection lanes.
     struct ConnectionKey {
