@@ -32,6 +32,27 @@ function(mooncake_provide_dpdk)
   pkg_check_modules(MOONCAKE_DPDK REQUIRED IMPORTED_TARGET libdpdk)
   add_library(Mooncake::dpdk INTERFACE IMPORTED)
   target_link_libraries(Mooncake::dpdk INTERFACE PkgConfig::MOONCAKE_DPDK)
+  # Link-only view for targets that do not compile DPDK headers, so the
+  # pkg-config compile flags (-march, -include rte_config.h) stay with the
+  # transport objects.
+  add_library(Mooncake::dpdk_link INTERFACE IMPORTED)
+  set_target_properties(
+    Mooncake::dpdk_link
+    PROPERTIES INTERFACE_LINK_LIBRARIES "${MOONCAKE_DPDK_LINK_LIBRARIES}"
+               INTERFACE_LINK_OPTIONS "${MOONCAKE_DPDK_LDFLAGS_OTHER}")
+  # Shared DPDK builds load PMDs as plugins and do not list them in
+  # libdpdk.pc; the ring PMD backs the in-process ringpair test ports.
+  find_library(MOONCAKE_DPDK_NET_RING rte_net_ring
+               HINTS ${MOONCAKE_DPDK_LIBRARY_DIRS})
+  if(MOONCAKE_DPDK_NET_RING)
+    target_link_libraries(Mooncake::dpdk INTERFACE ${MOONCAKE_DPDK_NET_RING})
+    target_compile_definitions(Mooncake::dpdk
+                               INTERFACE MOONCAKE_DPDK_HAVE_NET_RING)
+    set_property(
+      TARGET Mooncake::dpdk_link
+      APPEND
+      PROPERTY INTERFACE_LINK_LIBRARIES ${MOONCAKE_DPDK_NET_RING})
+  endif()
   message(STATUS "DPDK: ${MOONCAKE_DPDK_VERSION}")
 endfunction()
 

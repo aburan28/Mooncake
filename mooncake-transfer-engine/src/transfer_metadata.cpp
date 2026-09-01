@@ -1635,6 +1635,7 @@ int TransferMetadata::startHandshakeDaemon(
     if (rc != 0) {
         return rc;
     }
+    handshake_daemon_started_ = true;
     return 0;
 }
 

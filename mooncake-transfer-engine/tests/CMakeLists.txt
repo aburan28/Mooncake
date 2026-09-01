@@ -189,7 +189,11 @@ if(USE_TCP)
 endif()
 
 if(USE_DPDK)
+  # Runs on in-process ring PMD ports (no NIC, no hugepages); see the test
+  # file for the environment it sets up.
   add_executable(dpdk_transport_test ${WORKSPACE}/dpdk_transport_test.cpp)
+  target_compile_definitions(dpdk_transport_test
+                             PRIVATE MOONCAKE_DPDK_TRANSPORT_TEST_HOOKS)
   target_link_libraries(dpdk_transport_test PUBLIC transfer_engine gtest
                                                    gtest_main)
   add_test(NAME dpdk_transport_test COMMAND dpdk_transport_test)

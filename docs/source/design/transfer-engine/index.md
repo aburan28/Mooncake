@@ -517,6 +517,18 @@ For advanced users, TransferEngine provides the following advanced runtime optio
 - `MC_TCP_ENABLE_CONNECTION_POOL` Enable TCP Connection Pool to avoid excessive sockets.
 - `MC_TCP_SLICE_SIZE` The segmentation granularity (in bytes) of TCP transport for splitting large transfers into socket read/write operations. Corresponds to `MC_SLICE_SIZE` for RDMA. Default value 65536 (64KB).
 - `MC_TCP_PROTO` When set to `1`, TCP initiators use the legacy unacknowledged framing even against servers that support acknowledged framing (protocol v2). Under v2 (the default against v2-capable servers), a WRITE completes only after the receiver confirms the payload has been applied to destination memory, and server-side rejections surface as failed transfers instead of silent data loss. Use this variable only as a rollback escape hatch during mixed-version upgrades.
+- `MC_DPDK_PORTS` Enables the experimental `dpdk` kernel-bypass transport (built with `-DUSE_DPDK=ON`) and lists its ports: PCI addresses, vdev strings such as `net_af_xdp,iface=eth0`, or the test pseudo-port `ringpair:<id>:<a|b>`; separate entries with `;`. See [DPDK / AF_XDP Transport](dpdk_transport.md).
+- `MC_DPDK_IP` Local IPv4 address per DPDK port (comma-separated), advertised to peers in the segment descriptor. Required with `MC_DPDK_PORTS`.
+- `MC_DPDK_UDP_PORT` First UDP port of the DPDK workers, default value 5555; auto-incremented when busy.
+- `MC_DPDK_LCORES` Comma-separated CPU ids for the DPDK polling workers (one worker per id). Unset runs one unpinned worker per port.
+- `MC_DPDK_EAL_ARGS` Extra DPDK EAL arguments; `--in-memory --no-telemetry` are added by default (`--no-huge -m <MB>` runs without hugepages, software ports only).
+- `MC_DPDK_MTU` L3 MTU of the DPDK ports, default value 1500.
+- `MC_DPDK_CREDIT_BYTES` Receiver credit window shared by the transfers a DPDK worker receives, default value 4194304.
+- `MC_DPDK_RTO_US` Minimum retransmission timeout of the DPDK transport in microseconds, default value 200 (the RTO is 4x the estimated RTT above this floor).
+- `MC_DPDK_TIMEOUT_MS` A DPDK transfer without progress for this long fails, default value 10000.
+- `MC_DPDK_SLICE_SIZE` Maximum bytes per DPDK slice (MKTP transfer), default value 16777216.
+- `MC_DPDK_TX_ZEROCOPY` `1` forces zero-copy (external mbuf) TX from DMA-mapped host regions, `0` forces copies; default auto.
+- `MC_DPDK_GATEWAY_MAC` Destination MAC used for every DPDK frame in routed deployments; by default frames go to the peer's advertised MAC.
 
 ## C++ API Reference
 
@@ -581,10 +593,11 @@ mpcomm_transport
 transfer-engine-bench-tuning
 :::
 
-## io_uring and Kernel-Bypass Data Paths (Plan)
+## io_uring and Kernel-Bypass Data Paths
 
 :::{toctree}
 :maxdepth: 1
 
 io_uring_kernel_bypass_plan
+dpdk_transport
 :::

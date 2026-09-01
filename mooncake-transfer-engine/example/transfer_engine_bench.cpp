@@ -90,7 +90,8 @@ DEFINE_string(operation, "read", "Operation type: read or write");
 
 DEFINE_string(protocol, "rdma",
               "Transfer protocol: "
-              "rdma|barex|tcp|efa|nvlink|musa|nvlink_intra|hip|sunrise_link");
+              "rdma|barex|tcp|dpdk|efa|nvlink|musa|nvlink_intra|hip|"
+              "sunrise_link");
 
 DEFINE_string(device_name, "mlx5_2",
               "Device name to use, valid if protocol=rdma");
@@ -512,11 +513,12 @@ static Transport* installTransportFromFlags(TransferEngine* engine) {
         // would auto-install RDMA transport. Manually discover instead.
         engine->getLocalTopology()->discover({});
         xport = engine->installTransport("efa", nullptr);
-    } else if (FLAGS_protocol == "tcp" || FLAGS_protocol == "nvlink" ||
-               FLAGS_protocol == "musa" || FLAGS_protocol == "hip" ||
-               FLAGS_protocol == "nvlink_intra" ||
+    } else if (FLAGS_protocol == "tcp" || FLAGS_protocol == "dpdk" ||
+               FLAGS_protocol == "nvlink" || FLAGS_protocol == "musa" ||
+               FLAGS_protocol == "hip" || FLAGS_protocol == "nvlink_intra" ||
                FLAGS_protocol == "ubshmem" ||
                FLAGS_protocol == "sunrise_link" || FLAGS_protocol == "flagcx") {
+        // dpdk reads its ports and addresses from MC_DPDK_PORTS / MC_DPDK_IP.
         xport = engine->installTransport(FLAGS_protocol.c_str(), nullptr);
     } else {
         LOG(ERROR) << "Unsupported protocol: " << FLAGS_protocol;
