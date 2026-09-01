@@ -1,6 +1,6 @@
 # io_uring and Kernel-Bypass Data Paths for PD KV-Cache Transfer
 
-**Status:** implementation plan (proposal). **Scope:** Mooncake Transfer Engine (classic TE and TENT), Mooncake Store, the vLLM `MooncakeConnector`, and the SGLang Mooncake PD backend plus HiCache storage tiers.
+**Status:** implemented for Mooncake, vLLM and SGLang; see *Implementation status* below for what is verified and what still needs hardware. **Scope:** Mooncake Transfer Engine (classic TE and TENT), Mooncake Store, the vLLM `MooncakeConnector`, and the SGLang Mooncake PD backend plus HiCache storage tiers.
 
 This document plans two related pieces of work:
 
@@ -8,6 +8,42 @@ This document plans two related pieces of work:
 2. Add a **kernel-bypass** network path (DPDK, with AF_XDP as the portable variant) and, where the NIC allows it, reach GPU memory by DMA instead of staging through host memory.
 
 The plan is grounded in a survey of the three repositories at these revisions: Mooncake `b8f294d`, vLLM `9db222c`, SGLang `6ff2a20`.
+
+## 0. Implementation status
+
+| Phase | State | Verified by |
+|---|---|---|
+| 1 io_uring TCP backend | Implemented (`MC_TCP_IO_BACKEND=io_uring`) | `tcp_uring_backend_test` 23/23; `tcp_write_visibility_test` 44/44 under asio, 11 wire-level under io_uring with 33 asio-internal cases skipped |
+| 2 dmabuf zero copy | Implemented; negotiation and fallback exercised, data path needs hardware | Capability probe reports unsupported and falls back on a host without header/data split |
+| 3 vLLM / SGLang | Implemented (async submit/poll, `mooncake_env`, page-major buf infos, io_uring storage clients) | vLLM 49 connector tests, 46 offload tests; SGLang 19 async, 3 page-major, 16 uring-client tests |
+| 4 DPDK / AF_XDP | Implemented (`MC_DPDK_PORTS`, MKTP over UDP) | `dpdk_transport_test` 9/9 over an in-process ring PMD pair, including recovery under 20-50% injected packet loss |
+| 5 TENT parity | Not started | Deferred: no released wheel profile builds TENT (`USE_TENT` is absent from every profile), so it reaches no user until that release decision is made |
+
+Two defects the tests found, both fixed:
+
+- A zero-copy send reserves two completions (result and notification) but
+  retired only one, so a connection stalled on the first payload at or above
+  the threshold.
+- A peer that rejects one pipelined request closes the connection, and the
+  reset discards the status frames of requests it had already accepted, so a
+  pipelined retry replayed the same window until it gave up. Retries now send
+  one request per connection.
+
+Measured on this development VM (loopback, 4 shared cores, no NIC and no GPU),
+`transfer_engine_bench --protocol=tcp`, 2 threads, batch 16:
+
+| Backend | 64 KiB blocks | 4 MiB blocks |
+|---|---|---|
+| asio | 1.30 GB/s | 1.26 GB/s |
+| io_uring, zero copy at 16 KiB (old default) | 0.03 GB/s | 1.08 GB/s |
+| io_uring, zero copy disabled | 0.74 GB/s | — |
+
+Loopback has no NIC DMA to win back, so zero copy loses at every size there
+and the io_uring backend does not beat asio on this host. That is a property
+of the environment, not a result for real hardware: the numbers say the
+default zero-copy threshold was wrong (raised from 16 KiB to 256 KiB, the
+kernel's own crossover guidance) and that Phase 0 must be re-run on the target
+NICs before the backend is made the default.
 
 ## 1. Summary and recommendation
 

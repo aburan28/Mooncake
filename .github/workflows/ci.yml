@@ -799,8 +799,13 @@ jobs:
 
     - name: Test DPDK transport (software ports)
       if: matrix.need_dpdk
+      env:
+        # MC_FORCE_TCP pins every segment to the tcp transport, which starves
+        # the dpdk one of the segments its tests transfer between.
+        MC_FORCE_TCP: ""
       run: |
         cd build-datapath/mooncake-transfer-engine/tests
+        unset MC_FORCE_TCP
         ./dpdk_transport_test
       shell: bash
 
