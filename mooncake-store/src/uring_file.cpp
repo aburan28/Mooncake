@@ -64,6 +64,8 @@ class SharedUringRing {
     bool is_buffer_registered() const { return buf_registered_; }
     void* buffer_base() const { return buf_base_; }
     size_t buffer_size() const { return buf_size_; }
+    int init_errno() const { return init_errno_; }
+    int last_errno() const { return last_errno_; }
 
     // -----------------------------------------------------------------
     // Buffer registration
@@ -112,8 +114,7 @@ class SharedUringRing {
 
     tl::expected<size_t, ErrorCode> read(int fd, void* buf, size_t len,
                                          off_t off) {
-        if (!initialized_)
-            return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);
+        if (!begin_op()) return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);
         ensure_buf_registered();
         bool fix = in_registered_buf(buf, len);
         return submit_rw(/*write=*/false, fd, buf, len, off, fix);
@@ -121,79 +122,43 @@ class SharedUringRing {
 
     tl::expected<size_t, ErrorCode> write(int fd, const void* buf, size_t len,
                                           off_t off) {
-        if (!initialized_)
-            return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);
+        if (!begin_op()) return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);
         return submit_rw(/*write=*/true, fd, const_cast<void*>(buf), len, off,
                          /*use_fixed_buf=*/false);
     }
 
     tl::expected<size_t, ErrorCode> vector_read(int fd, const iovec* iovs,
                                                 int cnt, off_t off) {
-        if (!initialized_)
-            return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);
+        if (!begin_op()) return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);
         return submit_vector(/*write=*/false, fd, iovs, cnt, off);
     }
 
     tl::expected<size_t, ErrorCode> vector_write(int fd, const iovec* iovs,
                                                  int cnt, off_t off) {
-        if (!initialized_)
-            return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);
+        if (!begin_op()) return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);
         return submit_vector(/*write=*/true, fd, iovs, cnt, off);
     }
 
-    // Descriptor for one independently-addressed read in a batch.
+    // Descriptors for one independently-addressed read or write in a batch.
     using ReadDesc = UringFile::ReadDesc;
+    using WriteDesc = UringFile::WriteDesc;
 
     /// Submit up to QUEUE_DEPTH reads at once (each at its own offset), then
     /// collect completions. Repeat until all @p cnt descs are done.
     /// This gives the NVMe device queue depth > 1 within a single thread.
     tl::expected<void, ErrorCode> batch_read(int fd, ReadDesc* descs, int cnt) {
-        if (!initialized_)
-            return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);
-        ensure_buf_registered();
-        for (int i = 0; i < cnt; ++i) {
-            descs[i].bytes_read = 0;
-            descs[i].error = ErrorCode::OK;
-            descs[i].completed = false;
-        }
-        int remaining = cnt;
-        int idx = 0;
+        return batch_io(fd, descs, cnt, ErrorCode::FILE_READ_FAIL);
+    }
 
-        while (remaining > 0) {
-            int batch = std::min(remaining, static_cast<int>(QUEUE_DEPTH));
-            if (io_uring_sq_space_left(&ring_) < static_cast<unsigned>(batch)) {
-                LOG(ERROR) << "[SharedUringRing] insufficient SQ space for "
-                           << batch << " batch reads";
-                return tl::make_unexpected(ErrorCode::FILE_READ_FAIL);
-            }
-            uint64_t op = next_operation_tag();
-
-            for (int i = 0; i < batch; ++i) {
-                struct io_uring_sqe* sqe = io_uring_get_sqe(&ring_);
-                if (!sqe) {
-                    LOG(ERROR) << "[SharedUringRing] SQ full (batch_read)";
-                    return tl::make_unexpected(ErrorCode::FILE_READ_FAIL);
-                }
-                auto& d = descs[idx + i];
-                if (buf_registered_ && in_registered_buf(d.buf, d.len))
-                    io_uring_prep_read_fixed(sqe, fd, d.buf, d.len, d.off, 0);
-                else
-                    io_uring_prep_read(sqe, fd, d.buf, d.len, d.off);
-                sqe->user_data = op | static_cast<uint64_t>(i + 1);
-            }
-
-            auto res = collect_batch(batch, op, descs + idx);
-            if (!res) return res;
-            idx += batch;
-            remaining -= batch;
-        }
-        return {};
+    /// Write-side counterpart of batch_read.
+    tl::expected<void, ErrorCode> batch_write(int fd, WriteDesc* descs,
+                                              int cnt) {
+        return batch_io(fd, descs, cnt, ErrorCode::FILE_WRITE_FAIL);
     }
 
     /// Issue IORING_FSYNC_DATASYNC.  Blocks until complete.
     tl::expected<void, ErrorCode> fsync(int fd) {
-        if (!initialized_)
-            return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);
+        if (!begin_op()) return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);
 
         struct io_uring_sqe* sqe = io_uring_get_sqe(&ring_);
         if (!sqe) {
@@ -226,10 +191,12 @@ class SharedUringRing {
         ring_ = {};
         int ret = io_uring_queue_init(QUEUE_DEPTH, &ring_, 0);
         if (ret < 0) {
+            init_errno_ = -ret;
             LOG(ERROR) << "[SharedUringRing] io_uring_queue_init failed: "
                        << strerror(-ret);
             return false;
         }
+        init_errno_ = 0;
         initialized_ = true;
         LOG(INFO) << "[SharedUringRing] thread-local ring initialised "
                      "queue_depth="
@@ -273,6 +240,7 @@ class SharedUringRing {
                 std::this_thread::yield();
                 continue;
             }
+            record_errno(-ret);
             LOG(ERROR) << "[SharedUringRing] CQE wait error: "
                        << strerror(-ret);
             return false;
@@ -302,6 +270,7 @@ class SharedUringRing {
                    << " submitted=" << submit.submitted
                    << " pending=" << submit.pending
                    << " error=" << submit.error;
+        record_errno(-submit.error);
         drain_submitted(submit.submitted, op_id);
         reset_ring();
         return false;
@@ -381,6 +350,7 @@ class SharedUringRing {
             if (cqe->res < 0) {
                 LOG(ERROR) << "[SharedUringRing] CQE error: "
                            << strerror(-cqe->res);
+                record_errno(-cqe->res);
                 err = true;
             } else {
                 total += static_cast<size_t>(cqe->res);
@@ -392,8 +362,90 @@ class SharedUringRing {
         return total;
     }
 
+    // Every public operation starts here so that last_errno_ describes only
+    // the most recent one.
+    bool begin_op() {
+        if (!initialized_) {
+            last_errno_ = init_errno_;
+            return false;
+        }
+        last_errno_ = 0;
+        return true;
+    }
+
+    void record_errno(int err) {
+        if (err > 0 && last_errno_ == 0) last_errno_ = err;
+    }
+
+    static void prep_batch_sqe(struct io_uring_sqe* sqe, int fd,
+                               const ReadDesc& d, bool fixed) {
+        if (fixed)
+            io_uring_prep_read_fixed(sqe, fd, d.buf, d.len, d.off, 0);
+        else
+            io_uring_prep_read(sqe, fd, d.buf, d.len, d.off);
+    }
+
+    static void prep_batch_sqe(struct io_uring_sqe* sqe, int fd,
+                               const WriteDesc& d, bool fixed) {
+        if (fixed)
+            io_uring_prep_write_fixed(sqe, fd, d.buf, d.len, d.off, 0);
+        else
+            io_uring_prep_write(sqe, fd, d.buf, d.len, d.off);
+    }
+
+    static void set_batch_bytes(ReadDesc& d, size_t n) { d.bytes_read = n; }
+    static void set_batch_bytes(WriteDesc& d, size_t n) { d.bytes_written = n; }
+
+    // Shared implementation of batch_read / batch_write: submit up to
+    // QUEUE_DEPTH descriptors per round, then collect that round.
+    template <typename Desc>
+    tl::expected<void, ErrorCode> batch_io(int fd, Desc* descs, int cnt,
+                                           ErrorCode err_code) {
+        if (!begin_op()) return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);
+        ensure_buf_registered();
+        for (int i = 0; i < cnt; ++i) {
+            set_batch_bytes(descs[i], 0);
+            descs[i].error = ErrorCode::OK;
+            descs[i].completed = false;
+            descs[i].sys_errno = 0;
+        }
+        int remaining = cnt;
+        int idx = 0;
+
+        while (remaining > 0) {
+            int batch = std::min(remaining, static_cast<int>(QUEUE_DEPTH));
+            if (io_uring_sq_space_left(&ring_) < static_cast<unsigned>(batch)) {
+                LOG(ERROR) << "[SharedUringRing] insufficient SQ space for "
+                           << batch << " batch requests";
+                return tl::make_unexpected(err_code);
+            }
+            uint64_t op = next_operation_tag();
+
+            for (int i = 0; i < batch; ++i) {
+                struct io_uring_sqe* sqe = io_uring_get_sqe(&ring_);
+                if (!sqe) {
+                    LOG(ERROR) << "[SharedUringRing] SQ full (batch)";
+                    return tl::make_unexpected(err_code);
+                }
+                auto& d = descs[idx + i];
+                prep_batch_sqe(
+                    sqe, fd, d,
+                    buf_registered_ && in_registered_buf(d.buf, d.len));
+                sqe->user_data = op | static_cast<uint64_t>(i + 1);
+            }
+
+            auto res = collect_batch(batch, op, descs + idx, err_code);
+            if (!res) return res;
+            idx += batch;
+            remaining -= batch;
+        }
+        return {};
+    }
+
+    template <typename Desc>
     tl::expected<void, ErrorCode> collect_batch(int expected, uint64_t op_id,
-                                                ReadDesc* descs) {
+                                                Desc* descs,
+                                                ErrorCode err_code) {
         if (!prepare_completions(expected, op_id)) {
             return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);
         }
@@ -425,17 +477,19 @@ class SharedUringRing {
                 if (cqe->res < 0) {
                     LOG(ERROR) << "[SharedUringRing] batch CQE error: "
                                << strerror(-cqe->res);
-                    desc.error = ErrorCode::FILE_READ_FAIL;
+                    desc.error = err_code;
+                    desc.sys_errno = -cqe->res;
+                    record_errno(-cqe->res);
                     has_error = true;
                 } else {
-                    desc.bytes_read = static_cast<size_t>(cqe->res);
+                    set_batch_bytes(desc, static_cast<size_t>(cqe->res));
                 }
             }
             io_uring_cq_advance(&ring_, 1);
             ++processed;
         }
 
-        if (has_error) return tl::make_unexpected(ErrorCode::FILE_READ_FAIL);
+        if (has_error) return tl::make_unexpected(err_code);
         return {};
     }
 
@@ -569,6 +623,8 @@ class SharedUringRing {
     void* buf_base_ = nullptr;
     size_t buf_size_ = 0;
     uint64_t op_id_ = 0;  // monotonic ID for stale CQE filtering
+    int init_errno_ = 0;  // errno from io_uring_queue_init, 0 on success
+    int last_errno_ = 0;  // errno of the most recent operation, see begin_op
 };
 
 // ============================================================================
@@ -782,6 +838,39 @@ tl::expected<void, ErrorCode> UringFile::batch_read(ReadDesc* descs, int cnt) {
     }
 
     return SharedUringRing::instance().batch_read(fd_, descs, cnt);
+}
+
+// ---------------------------------------------------------------------------
+// batch_write — submit multiple independent writes in one ring submission
+// ---------------------------------------------------------------------------
+
+tl::expected<void, ErrorCode> UringFile::batch_write(WriteDesc* descs,
+                                                     int cnt) {
+    if (fd_ < 0) return make_error<void>(ErrorCode::FILE_NOT_FOUND);
+    if (!descs || cnt <= 0)
+        return make_error<void>(ErrorCode::FILE_INVALID_BUFFER);
+
+    for (int i = 0; i < cnt; ++i) {
+        if (!descs[i].buf || descs[i].len == 0)
+            return make_error<void>(ErrorCode::FILE_INVALID_BUFFER);
+        if (use_direct_io_ &&
+            (reinterpret_cast<uintptr_t>(descs[i].buf) % ALIGNMENT_ ||
+             descs[i].len % ALIGNMENT_ || descs[i].off % ALIGNMENT_)) {
+            return make_error<void>(ErrorCode::FILE_INVALID_BUFFER);
+        }
+    }
+
+    return SharedUringRing::instance().batch_write(fd_, descs, cnt);
+}
+
+int UringFile::last_io_errno() {
+    return SharedUringRing::instance().last_errno();
+}
+
+int UringFile::thread_ring_errno() {
+    auto& ring = SharedUringRing::instance();
+    if (ring.is_initialized()) return 0;
+    return ring.init_errno() ? ring.init_errno() : ENOSYS;
 }
 
 // ---------------------------------------------------------------------------
