@@ -580,3 +580,11 @@ mpcomm_transport
 
 transfer-engine-bench-tuning
 :::
+
+## io_uring and Kernel-Bypass Data Paths (Plan)
+
+:::{toctree}
+:maxdepth: 1
+
+io_uring_kernel_bypass_plan
+:::
