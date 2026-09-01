@@ -199,6 +199,8 @@ TENT's `TcpTransport` copies every payload into a `std::string` on both sides th
 
 Expose `UringFile`, `SharedUringRing`, `register_global_buffer`, `batch_read`, and `batch_write` through pybind as `mooncake.uring`, with a `SUPPORT_URING` attribute, so vLLM's disk offload, SGLang's HiCache client, and Mooncake Store share one io_uring file implementation instead of three. Add `SUPPORT_IOURING_TCP` and `SUPPORT_DPDK` attributes to `mooncake.engine` for feature detection.
 
+The existing `get_batch_transfer_status` binding blocks until every listed batch is terminal and frees the ids, so neither vLLM nor SGLang can drive a poll loop with it. Add a non-blocking pair to `mooncake.engine.TransferEngine`: `batch_transfer_poll(batch_ids) -> list[int]` (0 completed, 1 in flight, -1 failed or timed out; never frees) and `batch_transfer_free(batch_ids)`. The connectors use the pair when present and fall back to the blocking call on older wheels.
+
 ## 5. Phases, milestones, and exit criteria
 
 | Phase | Deliverables | Exit criteria |
