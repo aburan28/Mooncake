@@ -102,7 +102,7 @@ if(USE_IOURING_TCP)
 endif()
 
 if(USE_DPDK)
-  target_link_libraries(transfer_engine PUBLIC Mooncake::dpdk)
+  target_link_libraries(transfer_engine PRIVATE Mooncake::dpdk_link)
 endif()
 
 if(USE_CUDA)

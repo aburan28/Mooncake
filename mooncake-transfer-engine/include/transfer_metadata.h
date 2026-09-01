@@ -264,6 +264,10 @@ class TransferMetadata {
     int startHandshakeDaemon(OnReceiveHandShake on_receive_handshake,
                              uint16_t listen_port, int sockfd);
 
+    // True once a transport started the daemon. Starting it again would
+    // replace that transport's handshake callback.
+    bool handshakeDaemonStarted() const { return handshake_daemon_started_; }
+
     int sendHandshake(const std::string &peer_server_name,
                       const HandShakeDesc &local_desc,
                       HandShakeDesc &peer_desc);
@@ -296,6 +300,7 @@ class TransferMetadata {
     void metadataRefreshPollingLoop(uint64_t refresh_interval_seconds);
 
     bool p2p_handshake_mode_{false};
+    bool handshake_daemon_started_{false};
     std::string common_key_prefix_;
     std::string rpc_meta_prefix_;
     // local cache
