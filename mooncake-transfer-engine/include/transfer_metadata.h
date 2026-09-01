@@ -132,6 +132,18 @@ class TransferMetadata {
         // READ responses (#2086); absent/1 = legacy unacknowledged framing.
         int tcp_proto_version{1};
 
+        // Capability bits of the TCP data plane (tcp_wire::TcpCaps). Optional
+        // JSON field; absent means 0, so older peers keep the plain path.
+        uint32_t tcp_caps{0};
+        // Data ports steered to zero-copy RX queues, one per queue. Only
+        // meaningful when tcp_caps has TCP_CAP_ZCRX_RECV.
+        std::vector<uint16_t> tcp_zc_ports;
+
+        // Kernel-bypass endpoint of the "dpdk" transport (DPDK or AF_XDP).
+        std::string dpdk_ip;
+        uint16_t dpdk_udp_port{0};
+        std::string dpdk_mac;
+
         // In dual-NIC setups (MC_RDMA_BIND_ADDRESS), the RDMA-reachable
         // address may differ from the TCP-routable segment name.  When
         // non-empty, NIC paths are constructed using this value instead

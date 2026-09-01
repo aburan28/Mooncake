@@ -16,3 +16,7 @@ if(BUILD_UNIT_TESTS)
   target_compile_definitions(tcp_transport
                              PRIVATE MOONCAKE_TCP_TRANSPORT_TEST_HOOKS)
 endif()
+
+if(USE_IOURING_TCP)
+  target_link_libraries(tcp_transport PUBLIC Mooncake::liburing)
+endif()

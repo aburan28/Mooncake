@@ -56,9 +56,20 @@ class TcpTransport : public Transport {
     using HandShakeDesc = TransferMetadata::HandShakeDesc;
 
    public:
+    // Data-plane backend serving this transport. Both backends speak the
+    // same wire format (tcp_wire.h); the choice is per process via
+    // MC_TCP_IO_BACKEND=asio|io_uring and never changes what the segment
+    // advertises to peers.
+    enum class IoBackend { ASIO, IO_URING };
+
+    static IoBackend parseIoBackendEnv();
+    static const char *ioBackendName(IoBackend backend);
+
     TcpTransport();
 
     ~TcpTransport();
+
+    IoBackend ioBackend() const { return io_backend_; }
 
     Status submitTransfer(BatchID batch_id,
                           const std::vector<TransferRequest> &entries) override;
@@ -113,6 +124,7 @@ class TcpTransport : public Transport {
     std::atomic_bool running_;
     std::thread thread_;
     bool enable_connection_pool_ = true;
+    IoBackend io_backend_ = IoBackend::ASIO;
 
     // Client-side bounded work queues and fixed connection lanes.
     struct ConnectionKey {

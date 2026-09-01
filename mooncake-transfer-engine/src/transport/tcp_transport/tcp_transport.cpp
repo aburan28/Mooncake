@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "transport/tcp_transport/tcp_transport.h"
+#include "transport/tcp_transport/tcp_wire.h"
 
 #include <bits/stdint-uintn.h>
 #include <glog/logging.h>
@@ -313,10 +314,37 @@ bool validateTcpAddress(const std::shared_ptr<TransferMetadata>& metadata,
 }
 }  // namespace
 
+TcpTransport::IoBackend TcpTransport::parseIoBackendEnv() {
+    const char* env = getenv("MC_TCP_IO_BACKEND");
+    if (!env || !*env) return IoBackend::ASIO;
+    std::string val(env);
+    std::transform(val.begin(), val.end(), val.begin(),
+                   [](unsigned char c) -> char { return std::tolower(c); });
+    if (val == "asio") return IoBackend::ASIO;
+    if (val == "io_uring" || val == "uring" || val == "iouring") {
+#ifdef USE_IOURING_TCP
+        return IoBackend::IO_URING;
+#else
+        LOG(WARNING) << "MC_TCP_IO_BACKEND=" << env
+                     << " requested but this build has no io_uring backend "
+                        "(USE_IOURING_TCP=OFF or liburing missing); using asio";
+        return IoBackend::ASIO;
+#endif
+    }
+    LOG(WARNING) << "Invalid MC_TCP_IO_BACKEND value: " << env
+                 << " (expected asio or io_uring), using asio";
+    return IoBackend::ASIO;
+}
+
+const char* TcpTransport::ioBackendName(IoBackend backend) {
+    return backend == IoBackend::IO_URING ? "io_uring" : "asio";
+}
+
 TcpTransport::TcpTransport()
     : context_(nullptr),
       running_(false),
-      lane_state_(std::make_shared<ConnectionLaneState>()) {
+      lane_state_(std::make_shared<ConnectionLaneState>()),
+      io_backend_(parseIoBackendEnv()) {
     if (getenv("MC_TCP_ENABLE_CONNECTION_POOL") != nullptr) {
         std::string val(getenv("MC_TCP_ENABLE_CONNECTION_POOL"));
         std::transform(val.begin(), val.end(), val.begin(),
@@ -417,7 +445,8 @@ int TcpTransport::install(std::string& local_server_name,
     }
 
     close(sockfd);  // the above function has opened a socket
-    LOG(INFO) << "TcpTransport: listen on port " << tcp_port;
+    LOG(INFO) << "TcpTransport: listen on port " << tcp_port
+              << ", io backend " << ioBackendName(io_backend_);
     auto metadata = metadata_;
     context_ = new TcpContext(tcp_port, [metadata = std::move(metadata)](
                                             uint64_t addr, uint64_t size) {

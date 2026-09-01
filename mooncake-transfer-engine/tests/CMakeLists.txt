@@ -166,6 +166,16 @@ if(USE_TCP)
                                                          gtest_main)
   add_test(NAME tcp_write_visibility_test COMMAND tcp_write_visibility_test)
 
+  if(USE_IOURING_TCP)
+    add_executable(tcp_uring_backend_test
+                   ${WORKSPACE}/tcp_uring_backend_test.cpp)
+    target_compile_definitions(tcp_uring_backend_test
+                               PRIVATE MOONCAKE_TCP_TRANSPORT_TEST_HOOKS)
+    target_link_libraries(tcp_uring_backend_test PUBLIC transfer_engine gtest
+                                                        gtest_main)
+    add_test(NAME tcp_uring_backend_test COMMAND tcp_uring_backend_test)
+  endif()
+
   if(USE_CUDA)
     add_executable(tcp_cuda_staging_test ${WORKSPACE}/tcp_cuda_staging_test.cpp)
     target_compile_definitions(tcp_cuda_staging_test
@@ -176,6 +186,13 @@ if(USE_TCP)
                                                        gtest_main CUDA::cudart)
     add_test(NAME tcp_cuda_staging_test COMMAND tcp_cuda_staging_test)
   endif()
+endif()
+
+if(USE_DPDK)
+  add_executable(dpdk_transport_test ${WORKSPACE}/dpdk_transport_test.cpp)
+  target_link_libraries(dpdk_transport_test PUBLIC transfer_engine gtest
+                                                   gtest_main)
+  add_test(NAME dpdk_transport_test COMMAND dpdk_transport_test)
 endif()
 
 add_executable(tcp_address_validation_test

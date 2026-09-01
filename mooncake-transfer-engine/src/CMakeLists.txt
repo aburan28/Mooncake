@@ -97,6 +97,14 @@ if(USE_BAREX)
   target_link_libraries(transfer_engine PUBLIC barex_transport)
 endif()
 
+if(USE_IOURING_TCP)
+  target_link_libraries(transfer_engine PUBLIC Mooncake::liburing)
+endif()
+
+if(USE_DPDK)
+  target_link_libraries(transfer_engine PUBLIC Mooncake::dpdk)
+endif()
+
 if(USE_CUDA)
   target_include_directories(transfer_engine
                              PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
