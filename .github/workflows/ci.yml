@@ -712,6 +712,103 @@ jobs:
       shell: bash
       run: ${SCCACHE_PATH} --show-stats
 
+  datapath-ci:
+    needs: [spell-check, clang-format, check-paths]
+    if: *run-ci-for-source-changes
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: iouring-tcp
+            cmake_flags: '-DUSE_IOURING_TCP=ON -DUSE_DPDK=OFF'
+            need_dpdk: false
+          - name: dpdk
+            cmake_flags: '-DUSE_IOURING_TCP=ON -DUSE_DPDK=ON'
+            need_dpdk: true
+    name: datapath-ci (${{ matrix.name }})
+    env:
+      CI: "true"
+      SCCACHE_GHA_ENABLED: "true"
+      MC_METADATA_SERVER: "P2PHANDSHAKE"
+      MC_FORCE_TCP: "1"
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+
+    - name: Run sccache-cache
+      uses: mozilla-actions/sccache-action@v0.0.9
+
+    - name: Configure sccache
+      uses: actions/github-script@v7
+      with:
+        script: |
+          core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
+          core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+    - name: Install dependencies
+      run: |
+        sudo apt update -y
+        sudo apt install -y ninja-build liburing-dev
+        if [ "${{ matrix.need_dpdk }}" = "true" ]; then
+          sudo apt install -y dpdk-dev libdpdk-dev
+        fi
+        sudo bash -x dependencies.sh -y
+        df -h
+      shell: bash
+
+    # The io_uring backend needs the io_uring_setup family of syscalls; the
+    # test binaries skip themselves when the kernel or a seccomp profile
+    # refuses them, so a runner without io_uring still exercises the fallback.
+    - name: Configure transfer engine (classic)
+      run: |
+        mkdir build-datapath
+        cd build-datapath
+        cmake -G Ninja .. -DUSE_TCP=ON -DUSE_HTTP=ON -DUSE_CUDA=OFF \
+          -DWITH_STORE=OFF -DWITH_STORE_RUST=OFF -DWITH_EP=OFF \
+          -DBUILD_UNIT_TESTS=ON -DBUILD_EXAMPLES=ON -DBUILD_BENCHMARK=OFF \
+          -DENABLE_SCCACHE=ON -DENABLE_DEBUG_SYMBOLS=OFF \
+          ${{ matrix.cmake_flags }}
+      shell: bash
+
+    - name: Build transfer engine and data-path tests
+      run: |
+        cd build-datapath
+        cmake --build . --target transfer_engine transfer_metadata_test \
+          tcp_write_visibility_test tcp_uring_backend_test transfer_engine_bench
+        if [ "${{ matrix.need_dpdk }}" = "true" ]; then
+          cmake --build . --target dpdk_transport_test
+        fi
+      shell: bash
+
+    - name: Test metadata and asio backend
+      run: |
+        cd build-datapath/mooncake-transfer-engine/tests
+        ./transfer_metadata_test --gtest_filter='-TransferMetadataTest.RpcMetaEntryTest'
+        MC_TCP_IO_BACKEND=asio ./tcp_write_visibility_test
+      shell: bash
+
+    - name: Test io_uring backend
+      run: |
+        cd build-datapath/mooncake-transfer-engine/tests
+        MC_TCP_IO_BACKEND=io_uring ./tcp_uring_backend_test
+        MC_TCP_IO_BACKEND=io_uring ./tcp_write_visibility_test
+      shell: bash
+
+    - name: Test DPDK transport (software ports)
+      if: matrix.need_dpdk
+      run: |
+        cd build-datapath/mooncake-transfer-engine/tests
+        ./dpdk_transport_test
+      shell: bash
+
+    - name: Run sccache stat for check
+      if: ${{ env.SCCACHE_PATH != '' }}
+      shell: bash
+      run: ${SCCACHE_PATH} --show-stats
+
   ci-gate:
     name: CI Gate
     if: always()
@@ -729,6 +826,7 @@ jobs:
       - build-wheel-efa
       - build-wheel-rocm
       - tent-ci
+      - datapath-ci
       - integration-test
     runs-on: ubuntu-latest
     steps:
