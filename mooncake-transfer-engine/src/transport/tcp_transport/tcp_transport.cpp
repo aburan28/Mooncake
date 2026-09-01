@@ -31,6 +31,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <functional>
 #include <limits>
@@ -47,6 +48,11 @@
 #include "transport/transport.h"
 
 #include "cuda_alike.h"
+
+#ifdef USE_IOURING_TCP
+#include "tcp_uring_backend.h"
+#include "tcp_zero_copy.h"
+#endif
 
 namespace mooncake {
 using tcpsocket = asio::ip::tcp::socket;
@@ -397,6 +403,13 @@ TcpTransport::TcpTransport()
 
 TcpTransport::~TcpTransport() {
     shutdownConnectionLanes();
+#ifdef USE_IOURING_TCP
+    if (uring_) {
+        uring_->stop();
+        uring_.reset();
+    }
+    zero_copy_.reset();
+#endif
 
     if (context_) {
         delete context_;
@@ -425,6 +438,22 @@ int TcpTransport::install(std::string& local_server_name,
         return -1;
     }
 
+#ifdef USE_IOURING_TCP
+    if (io_backend_ == IoBackend::IO_URING) {
+        const int probe = tcp_uring::TcpUringBackend::probe();
+        if (probe < 0) {
+            LOG(WARNING) << "TcpTransport: io_uring unavailable ("
+                         << strerror(-probe)
+                         << "); falling back to the asio backend";
+            io_backend_ = IoBackend::ASIO;
+        } else {
+            zero_copy_ = std::make_shared<tcp_uring::TcpZeroCopy>(
+                tcp_uring::ZeroCopyConfig::fromEnv());
+            zero_copy_->probe();
+        }
+    }
+#endif
+
     int ret = allocateLocalSegmentID(tcp_port);
     if (ret) {
         LOG(ERROR) << "TcpTransport: cannot allocate local segment";
@@ -445,6 +474,14 @@ int TcpTransport::install(std::string& local_server_name,
     }
 
     close(sockfd);  // the above function has opened a socket
+
+    if (io_backend_ == IoBackend::IO_URING && startUringBackend(tcp_port)) {
+        LOG(INFO) << "TcpTransport: listen on port " << tcp_port
+                  << ", io backend " << ioBackendName(io_backend_);
+        running_ = true;
+        return 0;
+    }
+
     LOG(INFO) << "TcpTransport: listen on port " << tcp_port
               << ", io backend " << ioBackendName(io_backend_);
     auto metadata = metadata_;
@@ -458,6 +495,33 @@ int TcpTransport::install(std::string& local_server_name,
     running_ = true;
     thread_ = std::thread(&TcpTransport::worker, this);
     return 0;
+}
+
+// The io_uring data plane replaces the asio TcpContext entirely: it binds its
+// own SO_REUSEPORT listeners on the advertised data port and owns both
+// directions. Any failure here (seccomp, an old kernel, a resource limit)
+// falls back to asio and rewrites io_backend_ so ioBackend() stays truthful.
+bool TcpTransport::startUringBackend(int tcp_data_port) {
+#ifdef USE_IOURING_TCP
+    auto metadata = metadata_;
+    auto backend = std::make_unique<tcp_uring::TcpUringBackend>(
+        tcp_uring::UringConfig::fromEnv(),
+        [metadata](uint64_t addr, uint64_t size) {
+            return validateTcpAddress(metadata, addr, size);
+        });
+    if (backend->start(static_cast<uint16_t>(tcp_data_port), zero_copy_) != 0) {
+        LOG(WARNING) << "TcpTransport: io_uring backend failed to start; "
+                        "falling back to the asio backend";
+        io_backend_ = IoBackend::ASIO;
+        return false;
+    }
+    uring_ = std::move(backend);
+    return true;
+#else
+    (void)tcp_data_port;
+    io_backend_ = IoBackend::ASIO;
+    return false;
+#endif
 }
 
 int TcpTransport::allocateLocalSegmentID(int tcp_data_port) {
@@ -475,6 +539,15 @@ int TcpTransport::allocateLocalSegmentID(int tcp_data_port) {
     // Advertise acknowledged framing (#2086); initiators fall back to v1
     // against descriptors that do not carry the field.
     desc->tcp_proto_version = 2;
+#ifdef USE_IOURING_TCP
+    // Zero-copy capabilities are advertised only after the local probe
+    // succeeded, so a peer never steers payload at a queue that does not
+    // exist. Older peers ignore both fields.
+    if (zero_copy_) {
+        desc->tcp_caps = zero_copy_->caps();
+        desc->tcp_zc_ports = zero_copy_->dataPorts();
+    }
+#endif
     metadata_->addLocalSegment(LOCAL_SEGMENT_ID, local_server_name_,
                                std::move(desc));
     return 0;
@@ -492,10 +565,16 @@ int TcpTransport::registerLocalMemory(void* addr, size_t length,
 #ifdef ENABLE_MULTI_PROTOCOL
     buffer_desc.protocol = "tcp";
 #endif
+#ifdef USE_IOURING_TCP
+    if (uring_) uring_->registerRegion(addr, length);
+#endif
     return metadata_->addLocalMemoryBuffer(buffer_desc, update_metadata);
 }
 
 int TcpTransport::unregisterLocalMemory(void* addr, bool update_metadata) {
+#ifdef USE_IOURING_TCP
+    if (uring_) uring_->unregisterRegion(addr);
+#endif
     return metadata_->removeLocalMemoryBuffer(addr, update_metadata);
 }
 
@@ -561,6 +640,20 @@ Status TcpTransport::submitTransfer(
     size_t task_id = batch_desc.task_list.size();
     batch_desc.task_list.resize(task_id + entries.size());
 
+#ifdef USE_IOURING_TCP
+    if (uring_) {
+        std::vector<Slice*> slices;
+        slices.reserve(entries.size());
+        for (auto& request : entries) {
+            TransferTask& task = batch_desc.task_list[task_id];
+            ++task_id;
+            slices.push_back(prepareTransfer(&task, request));
+        }
+        submitUring(std::move(slices));
+        return Status::OK();
+    }
+#endif
+
     for (auto& request : entries) {
         TransferTask& task = batch_desc.task_list[task_id];
         ++task_id;
@@ -572,6 +665,18 @@ Status TcpTransport::submitTransfer(
 
 Status TcpTransport::submitTransferTask(
     const std::vector<TransferTask*>& task_list) {
+#ifdef USE_IOURING_TCP
+    if (uring_) {
+        std::vector<Slice*> slices;
+        slices.reserve(task_list.size());
+        for (auto* task : task_list) {
+            assert(task && task->request);
+            slices.push_back(prepareTransfer(task, *task->request));
+        }
+        submitUring(std::move(slices));
+        return Status::OK();
+    }
+#endif
     for (size_t i = 0; i < task_list.size();) {
         auto* task = task_list[i];
         assert(task && task->request);
@@ -605,9 +710,77 @@ Status TcpTransport::submitTransferTaskGroup(
         assert(task && task->request);
         slices.push_back(prepareTransfer(task, *task->request));
     }
+#ifdef USE_IOURING_TCP
+    if (uring_) {
+        submitUring(std::move(slices));
+        return Status::OK();
+    }
+#endif
     startTransferSequence(std::move(slices));
     return Status::OK();
 }
+
+#ifdef USE_IOURING_TCP
+// Groups slices by target segment and hands each peer a bounded batch of
+// pipelined requests. Slices that need no wire traffic (zero length, or an
+// unusable descriptor) are retired here, exactly as the asio path does in
+// startTransfer.
+void TcpTransport::submitUring(std::vector<Slice*> slices) {
+    struct PeerBatch {
+        std::string host;
+        uint16_t port = 0;
+        bool use_v2 = false;
+        uint32_t caps = 0;
+        std::vector<uint16_t> zc_ports;
+        std::vector<Slice*> slices;
+    };
+    std::map<SegmentID, PeerBatch> batches;
+
+    for (Slice* slice : slices) {
+        if (slice->length == 0) {
+            // Zero-length requests are complete by definition; v1 reported
+            // them COMPLETED while the server rejected size == 0 in address
+            // validation, and that outcome is preserved without a round trip.
+            slice->markSuccess();
+            continue;
+        }
+        auto it = batches.find(slice->target_id);
+        if (it == batches.end()) {
+            auto desc = metadata_->getSegmentDescByID(slice->target_id);
+            if (!desc || desc->tcp_data_host.empty()) {
+                LOG(ERROR) << "TcpTransport: no TCP data endpoint for "
+                              "target_id "
+                           << slice->target_id;
+                slice->markFailed();
+                continue;
+            }
+            PeerBatch batch;
+            batch.host = desc->tcp_data_host;
+            batch.port = static_cast<uint16_t>(desc->tcp_data_port);
+            batch.use_v2 =
+                desc->tcp_proto_version >= 2 && !tcp_wire::forceLegacyTcpProto();
+            batch.caps = desc->tcp_caps;
+            batch.zc_ports = desc->tcp_zc_ports;
+            it = batches.emplace(slice->target_id, std::move(batch)).first;
+        }
+        it->second.slices.push_back(slice);
+    }
+
+    const size_t window = uring_->config().pipeline;
+    for (auto& entry : batches) {
+        PeerBatch& batch = entry.second;
+        for (size_t offset = 0; offset < batch.slices.size(); offset += window) {
+            tcp_uring::LaneWork work;
+            work.use_v2 = batch.use_v2;
+            const size_t end = std::min(offset + window, batch.slices.size());
+            work.slices.assign(batch.slices.begin() + offset,
+                               batch.slices.begin() + end);
+            uring_->submit(batch.host, batch.port, std::move(work), batch.caps,
+                           batch.zc_ports);
+        }
+    }
+}
+#endif
 
 Transport::Slice* TcpTransport::prepareTransfer(
     TransferTask* task, const TransferRequest& request) {
