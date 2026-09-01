@@ -358,6 +358,112 @@ TEST_F(PosixFileTest, UringBatchReadDrainsErrorsBeforeNextOperation) {
     EXPECT_EQ(desc.bytes_read, data.size());
     EXPECT_EQ(std::string_view(output.data(), output.size()), data);
 }
+
+TEST_F(PosixFileTest, UringBatchWriteReportsPerRequestResultsAcrossQueueDepth) {
+    constexpr size_t kBlockSize = 128;
+    constexpr int kRequestCount = 40;
+    std::vector<std::array<char, kBlockSize>> expected(kRequestCount);
+    std::vector<UringFile::WriteDesc> descs;
+    descs.reserve(kRequestCount);
+    for (int i = 0; i < kRequestCount; ++i) {
+        expected[i].fill(static_cast<char>('a' + i % 26));
+        // Reverse order so completions do not follow file order.
+        descs.push_back(UringFile::WriteDesc{
+            expected[i].data(), expected[i].size(),
+            static_cast<off_t>((kRequestCount - 1 - i) * kBlockSize)});
+    }
+
+    int uring_fd = dup(test_fd);
+    ASSERT_GE(uring_fd, 0);
+    UringFile uring_file(test_filename, uring_fd, 32, false);
+
+    auto result = uring_file.batch_write(descs.data(), descs.size());
+    ASSERT_TRUE(result.has_value()) << toString(result.error());
+    EXPECT_EQ(UringFile::last_io_errno(), 0);
+    for (int i = 0; i < kRequestCount; ++i) {
+        EXPECT_TRUE(descs[i].completed);
+        EXPECT_EQ(descs[i].error, ErrorCode::OK);
+        EXPECT_EQ(descs[i].sys_errno, 0);
+        EXPECT_EQ(descs[i].bytes_written, kBlockSize);
+        std::array<char, kBlockSize> actual{};
+        ASSERT_EQ(
+            pread(test_fd, actual.data(), actual.size(),
+                  static_cast<off_t>((kRequestCount - 1 - i) * kBlockSize)),
+            static_cast<ssize_t>(actual.size()));
+        EXPECT_EQ(actual, expected[i]);
+    }
+}
+
+TEST_F(PosixFileTest, UringBatchWriteRejectsMisalignedDirectIoDescriptors) {
+    int uring_fd = dup(test_fd);
+    ASSERT_GE(uring_fd, 0);
+    UringFile uring_file(test_filename, uring_fd, 32, true);
+
+    void* allocation = nullptr;
+    ASSERT_EQ(posix_memalign(&allocation, 4096, 8192), 0);
+    std::unique_ptr<void, decltype(&std::free)> buffer(allocation, &std::free);
+    auto* aligned = static_cast<char*>(buffer.get());
+
+    auto expect_invalid = [&](UringFile::WriteDesc desc) {
+        auto result = uring_file.batch_write(&desc, 1);
+        ASSERT_FALSE(result.has_value());
+        EXPECT_EQ(result.error(), ErrorCode::FILE_INVALID_BUFFER);
+        EXPECT_FALSE(desc.completed);
+    };
+
+    expect_invalid(UringFile::WriteDesc{aligned + 1, 4096, 0});
+    expect_invalid(UringFile::WriteDesc{aligned, 4095, 0});
+    expect_invalid(UringFile::WriteDesc{aligned, 4096, 1});
+    expect_invalid(UringFile::WriteDesc{aligned, 0, 0});
+}
+
+TEST_F(PosixFileTest, UringBatchWriteReportsErrnoPerRequest) {
+    int read_only_fd = open(test_filename.c_str(), O_RDONLY | O_CLOEXEC);
+    ASSERT_GE(read_only_fd, 0);
+    UringFile read_only(test_filename, read_only_fd, 32, false);
+    read_only.SetDeleteOnWriteFail(false);
+
+    std::array<char, 16> first{};
+    std::array<char, 16> second{};
+    std::array<UringFile::WriteDesc, 2> descs{
+        UringFile::WriteDesc{first.data(), first.size(), 0},
+        UringFile::WriteDesc{second.data(), second.size(), 16}};
+
+    auto result = read_only.batch_write(descs.data(), descs.size());
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), ErrorCode::FILE_WRITE_FAIL);
+    EXPECT_EQ(UringFile::last_io_errno(), EBADF);
+    for (const auto& desc : descs) {
+        EXPECT_TRUE(desc.completed);
+        EXPECT_EQ(desc.error, ErrorCode::FILE_WRITE_FAIL);
+        EXPECT_EQ(desc.sys_errno, EBADF);
+        EXPECT_EQ(desc.bytes_written, 0U);
+    }
+
+    // The next operation on this thread starts with a clean errno.
+    int uring_fd = dup(test_fd);
+    ASSERT_GE(uring_fd, 0);
+    UringFile writable(test_filename, uring_fd, 32, false);
+    auto write_result = writable.write_aligned(first.data(), first.size(), 0);
+    ASSERT_TRUE(write_result.has_value()) << toString(write_result.error());
+    EXPECT_EQ(UringFile::last_io_errno(), 0);
+}
+
+TEST_F(PosixFileTest, UringSingleIoRecordsCompletionErrno) {
+    int read_only_fd = open(test_filename.c_str(), O_RDONLY | O_CLOEXEC);
+    ASSERT_GE(read_only_fd, 0);
+    UringFile read_only(test_filename, read_only_fd, 32, false);
+    read_only.SetDeleteOnWriteFail(false);
+
+    std::array<char, 16> data{};
+    auto result = read_only.write_aligned(data.data(), data.size(), 0);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(UringFile::last_io_errno(), EBADF);
+}
+
+TEST(UringRingTest, ThreadRingErrnoIsZeroWhenRingIsUsable) {
+    EXPECT_EQ(UringFile::thread_ring_errno(), 0);
+}
 #endif
 
 }  // namespace mooncake

@@ -69,6 +69,14 @@ else
     echo "Skipping store.so (not built - likely WITH_STORE is set to OFF)"
 fi
 
+# Copy uring.so to mooncake directory (io_uring file bindings, mooncake.uring)
+if compgen -G "${BUILD_DIR}/mooncake-integration/uring.*.so" >/dev/null; then
+    echo "Copying uring.so..."
+    cp ${BUILD_DIR}/mooncake-integration/uring.*.so mooncake-wheel/mooncake/uring.so
+else
+    echo "Skipping uring.so (not built)"
+fi
+
 # Copy libmooncake_store.so to mooncake directory (only when BUILD_SHARED_LIBS is set)
 if [ -f ${BUILD_DIR}/mooncake-store/src/libmooncake_store.so ]; then
     echo "Copying libmooncake_store.so..."

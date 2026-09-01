@@ -224,8 +224,31 @@ class UringFile : public StorageFile {
         size_t bytes_read = 0;
         ErrorCode error = ErrorCode::OK;
         bool completed = false;
+        int sys_errno = 0;  // errno of a failed completion, 0 otherwise
     };
     tl::expected<void, ErrorCode> batch_read(ReadDesc *descs, int cnt);
+
+    // Batch write: the write-side counterpart of batch_read. Descriptors that
+    // fall inside the registered buffer are submitted as fixed-buffer writes.
+    struct WriteDesc {
+        const void *buf;
+        size_t len;
+        off_t off;
+        size_t bytes_written = 0;
+        ErrorCode error = ErrorCode::OK;
+        bool completed = false;
+        int sys_errno = 0;
+    };
+    tl::expected<void, ErrorCode> batch_write(WriteDesc *descs, int cnt);
+
+    // errno recorded by the calling thread's ring for its most recent
+    // operation: the first failed completion, a failed submission, or the
+    // ring initialisation error. 0 when the failure carried no errno.
+    static int last_io_errno();
+
+    // 0 when the calling thread's ring is usable, otherwise the errno from
+    // io_uring_queue_init (EPERM under seccomp, ENOSYS on old kernels).
+    static int thread_ring_errno();
 
     // Flush data to stable storage via IORING_FSYNC_DATASYNC.
     // Must be called after write_aligned and before writing dependent metadata.

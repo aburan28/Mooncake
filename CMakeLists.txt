@@ -103,7 +103,9 @@ if(WITH_STORE)
     mooncake_provide_libzmq()
   endif()
 endif()
-if(WITH_STORE OR (WITH_TE AND (USE_TENT OR USE_IOURING_TCP)))
+# liburing is optional: the store, the io_uring TCP backend and the
+# mooncake.uring Python module use it when found.
+if(WITH_STORE OR WITH_TE)
   mooncake_provide_liburing()
 endif()
 if(WITH_TE AND USE_IOURING_TCP)
