@@ -77,8 +77,8 @@ uint64_t parseUnsigned(const char *name, uint64_t fallback, uint64_t minimum,
 }
 
 struct RingPair {
-    struct rte_ring *ab = nullptr;
-    struct rte_ring *ba = nullptr;
+    struct rte_ring *a_to_b = nullptr;
+    struct rte_ring *b_to_a = nullptr;
     int port_id[2] = {-1, -1};
     struct rte_mempool *mbuf_pool[2] = {nullptr, nullptr};
     struct rte_mempool *ctrl_pool[2] = {nullptr, nullptr};
@@ -412,18 +412,20 @@ int Eal::openRingPair(const std::string &spec, Port &port) {
         return -1;
     }
     RingPair &pair = ringPairs()[id];
-    if (!pair.ab) {
-        const std::string ab = "mc_rp" + std::to_string(id) + "_ab";
-        const std::string ba = "mc_rp" + std::to_string(id) + "_ba";
-        pair.ab = rte_ring_create(ab.c_str(), ring_size, SOCKET_ID_ANY, 0);
-        pair.ba = rte_ring_create(ba.c_str(), ring_size, SOCKET_ID_ANY, 0);
-        if (!pair.ab || !pair.ba) {
+    if (!pair.a_to_b) {
+        const std::string a_to_b = "mc_rp" + std::to_string(id) + "_atob";
+        const std::string b_to_a = "mc_rp" + std::to_string(id) + "_btoa";
+        pair.a_to_b =
+            rte_ring_create(a_to_b.c_str(), ring_size, SOCKET_ID_ANY, 0);
+        pair.b_to_a =
+            rte_ring_create(b_to_a.c_str(), ring_size, SOCKET_ID_ANY, 0);
+        if (!pair.a_to_b || !pair.b_to_a) {
             LOG(ERROR) << "DpdkTransport: cannot create rings for " << spec
                        << ": " << rte_strerror(rte_errno);
             return -1;
         }
-        struct rte_ring *rx_a[1] = {pair.ba}, *tx_a[1] = {pair.ab};
-        struct rte_ring *rx_b[1] = {pair.ab}, *tx_b[1] = {pair.ba};
+        struct rte_ring *rx_a[1] = {pair.b_to_a}, *tx_a[1] = {pair.a_to_b};
+        struct rte_ring *rx_b[1] = {pair.a_to_b}, *tx_b[1] = {pair.b_to_a};
         const std::string name_a = "mcrp" + std::to_string(id) + "a";
         const std::string name_b = "mcrp" + std::to_string(id) + "b";
         pair.port_id[0] =
