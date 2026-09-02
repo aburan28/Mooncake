@@ -110,8 +110,58 @@ if(WITH_STORE OR WITH_TE)
 endif()
 if(WITH_TE AND USE_IOURING_TCP)
   if(TARGET Mooncake::liburing)
-    add_compile_definitions(USE_IOURING_TCP)
-    message(STATUS "io_uring TCP backend: Enabled")
+    # The backend needs the submission and zero-copy API that liburing grew in
+    # 2.3-2.4 (registered rings and sparse tables, 64-bit user data, multishot
+    # accept, send_zc, cancel_fd). Build images that ship an older liburing --
+    # several wheel builders do -- still find the library, so probe for the
+    # API rather than its presence and fall back to the asio backend, which is
+    # the same thing that happens at run time when the kernel refuses a ring.
+    include(CheckCXXSourceCompiles)
+    get_target_property(MOONCAKE_LIBURING_INCLUDE_DIRS Mooncake::liburing
+                        INTERFACE_INCLUDE_DIRECTORIES)
+    get_target_property(MOONCAKE_LIBURING_LOCATION Mooncake::liburing
+                        IMPORTED_LOCATION)
+    set(CMAKE_REQUIRED_INCLUDES_SAVE ${CMAKE_REQUIRED_INCLUDES})
+    set(CMAKE_REQUIRED_LIBRARIES_SAVE ${CMAKE_REQUIRED_LIBRARIES})
+    set(CMAKE_REQUIRED_INCLUDES ${MOONCAKE_LIBURING_INCLUDE_DIRS})
+    set(CMAKE_REQUIRED_LIBRARIES ${MOONCAKE_LIBURING_LOCATION})
+    check_cxx_source_compiles(
+      "
+#include <liburing.h>
+int main() {
+    struct io_uring ring{};
+    unsigned flags = IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN |
+                     IORING_SETUP_COOP_TASKRUN;
+    (void)flags;
+    (void)(IORING_CQE_F_NOTIF | IORING_ASYNC_CANCEL_ALL);
+    (void)io_uring_register_ring_fd(&ring);
+    (void)io_uring_register_files_sparse(&ring, 1);
+    (void)io_uring_register_buffers_sparse(&ring, 1);
+    (void)io_uring_register(0, 0, nullptr, 0);
+    struct io_uring_sqe sqe{};
+    io_uring_sqe_set_data64(&sqe, 0);
+    struct io_uring_cqe cqe{};
+    (void)io_uring_cqe_get_data64(&cqe);
+    io_uring_prep_multishot_accept(&sqe, 0, nullptr, nullptr, 0);
+    io_uring_prep_send_zc(&sqe, 0, nullptr, 0, 0, 0);
+    io_uring_prep_send_zc_fixed(&sqe, 0, nullptr, 0, 0, 0, 0);
+    io_uring_prep_cancel_fd(&sqe, 0, IORING_ASYNC_CANCEL_ALL);
+    return 0;
+}
+"
+      MOONCAKE_IOURING_TCP_API_COMPILES)
+    set(CMAKE_REQUIRED_INCLUDES ${CMAKE_REQUIRED_INCLUDES_SAVE})
+    set(CMAKE_REQUIRED_LIBRARIES ${CMAKE_REQUIRED_LIBRARIES_SAVE})
+    if(MOONCAKE_IOURING_TCP_API_COMPILES)
+      add_compile_definitions(USE_IOURING_TCP)
+      message(STATUS "io_uring TCP backend: Enabled")
+    else()
+      set(USE_IOURING_TCP OFF)
+      message(
+        STATUS
+          "io_uring TCP backend: Disabled (liburing is too old; needs the 2.3+ registered-ring and send_zc API)"
+      )
+    endif()
   else()
     set(USE_IOURING_TCP OFF)
     message(STATUS "io_uring TCP backend: Disabled (liburing not found)")

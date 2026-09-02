@@ -141,7 +141,10 @@ class TcpTransport : public Transport {
     bool enable_connection_pool_ = true;
     IoBackend io_backend_ = IoBackend::ASIO;
     std::shared_ptr<tcp_uring::TcpZeroCopy> zero_copy_;
-    std::unique_ptr<tcp_uring::TcpUringBackend> uring_;
+    // shared_ptr, not unique_ptr: it type-erases the deleter at construction,
+    // so the member needs no complete type in a build without the io_uring
+    // backend, where tcp_uring_backend.h is never included.
+    std::shared_ptr<tcp_uring::TcpUringBackend> uring_;
 
     // Client-side bounded work queues and fixed connection lanes.
     struct ConnectionKey {
