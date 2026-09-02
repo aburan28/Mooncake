@@ -25,6 +25,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
@@ -426,6 +427,13 @@ struct TcpUringBackend::Impl {
     UringConfig config;
     UringStats *stats;
     ValidateAddrFn validate_addr;
+    // Zero-copy send pins the source pages against RLIMIT_MEMLOCK until the
+    // notification lands. Containers commonly cap that at a few MiB, far below
+    // one transfer's worth of chunks, and the kernel then answers a send with
+    // ENOMEM. That is a statement about the environment, not about the
+    // transfer, so the first one retires zero copy for the process and every
+    // send afterwards copies.
+    std::atomic<bool> zc_unavailable{false};
     std::shared_ptr<TcpZeroCopy> zero_copy;
     std::unique_ptr<LanePool> lanes;
     std::vector<std::unique_ptr<Worker>> workers;
@@ -829,6 +837,18 @@ class TcpUringBackend::Impl::Worker {
         if (op->step >= conn->steps.size()) return;
         PlanStep &step = conn->steps[op->step];
         if (res < 0) {
+            if (op->zc && res == -ENOMEM) {
+                // Out of locked memory, not out of sockets: leave the step
+                // unfinished so the drain re-posts it as a copying send.
+                if (!impl_->zc_unavailable.exchange(
+                        true, std::memory_order_relaxed)) {
+                    LOG(WARNING)
+                        << "TcpUring: zero-copy send hit the locked-memory "
+                           "limit (RLIMIT_MEMLOCK); falling back to copying "
+                           "sends. Raise the limit to keep zero copy.";
+                }
+                return;
+            }
             // A broken link cancels everything behind the failure; the tail
             // is simply re-posted once the chain has drained.
             if (res != -ECANCELED) conn->setError(-res);
@@ -1474,8 +1494,10 @@ class TcpUringBackend::Impl::Worker {
         // MSG_WAITALL makes a short send break the link, so the tail is
         // re-posted rather than racing ahead of the missing bytes.
         const int flags = MSG_WAITALL | MSG_NOSIGNAL;
-        const bool bulk = step.kind == StepKind::kSendPay &&
-                          buffer.len >= impl_->config.zc_threshold;
+        const bool bulk =
+            step.kind == StepKind::kSendPay &&
+            buffer.len >= impl_->config.zc_threshold &&
+            !impl_->zc_unavailable.load(std::memory_order_relaxed);
         int slot = -1;
         if (bulk && fixed_buffers_)
             slot =

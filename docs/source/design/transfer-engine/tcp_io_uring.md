@@ -67,6 +67,16 @@ guidance that the crossover is near 256 KiB.
 back — so single-host benchmarks should set `MC_TCP_URING_ZC_THRESHOLD` high
 enough to disable it.
 
+Zero copy also needs locked-memory budget: the kernel pins the source pages
+until the notification lands, charged against `RLIMIT_MEMLOCK`. Containers
+commonly cap that well below one transfer's worth of chunks, and the kernel
+then answers a send with `ENOMEM`. The backend treats that as a statement
+about the environment rather than about the transfer: the first occurrence
+logs once, retires zero copy for the process, and every send afterwards
+copies. Raise the limit (`ulimit -l`, or `--ulimit memlock=` on the
+container) to keep zero copy; registered fixed buffers are charged to the
+same budget and degrade the same way.
+
 A request is reported successful only when its v2 status frame arrives, which
 the peer sends after the payload has been applied to destination memory. The
 source pages are therefore never reclaimed early, whatever the zero-copy
