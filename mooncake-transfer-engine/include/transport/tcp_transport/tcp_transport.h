@@ -44,6 +44,11 @@
 #include "ylt/coro_io/coro_io.hpp"
 
 namespace mooncake {
+namespace tcp_uring {
+class TcpUringBackend;
+class TcpZeroCopy;
+}  // namespace tcp_uring
+
 class TransferMetadata;
 struct ClientSession;
 class TcpContext;
@@ -56,9 +61,20 @@ class TcpTransport : public Transport {
     using HandShakeDesc = TransferMetadata::HandShakeDesc;
 
    public:
+    // Data-plane backend serving this transport. Both backends speak the
+    // same wire format (tcp_wire.h); the choice is per process via
+    // MC_TCP_IO_BACKEND=asio|io_uring and never changes what the segment
+    // advertises to peers.
+    enum class IoBackend { ASIO, IO_URING };
+
+    static IoBackend parseIoBackendEnv();
+    static const char *ioBackendName(IoBackend backend);
+
     TcpTransport();
 
     ~TcpTransport();
+
+    IoBackend ioBackend() const { return io_backend_; }
 
     Status submitTransfer(BatchID batch_id,
                           const std::vector<TransferRequest> &entries) override;
@@ -80,6 +96,16 @@ class TcpTransport : public Transport {
     int startHandshakeDaemon();
 
     int allocateLocalSegmentID(int tcp_data_port);
+
+    // Starts the io_uring data plane and reports whether it took over. On
+    // failure the caller keeps the asio backend and io_backend_ is reset so
+    // ioBackend() reports what is actually serving the transport.
+    bool startUringBackend(int tcp_data_port);
+
+    // Routes one task group to the io_uring backend. Zero-length slices are
+    // completed here, exactly as the asio path does, so they never reach the
+    // wire.
+    void submitUring(std::vector<Slice *> slices);
 
     int registerLocalMemory(void *addr, size_t length,
                             const std::string &location, bool remote_accessible,
@@ -113,6 +139,12 @@ class TcpTransport : public Transport {
     std::atomic_bool running_;
     std::thread thread_;
     bool enable_connection_pool_ = true;
+    IoBackend io_backend_ = IoBackend::ASIO;
+    std::shared_ptr<tcp_uring::TcpZeroCopy> zero_copy_;
+    // shared_ptr, not unique_ptr: it type-erases the deleter at construction,
+    // so the member needs no complete type in a build without the io_uring
+    // backend, where tcp_uring_backend.h is never included.
+    std::shared_ptr<tcp_uring::TcpUringBackend> uring_;
 
     // Client-side bounded work queues and fixed connection lanes.
     struct ConnectionKey {

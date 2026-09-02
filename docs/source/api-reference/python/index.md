@@ -5,6 +5,7 @@
 | [Mooncake Store](mooncake-store) | Distributed KV cache storage client — `put`/`get`/`remove`/`replicate` operations |
 | [DataProto Structured Object Transfer](dataproto-structured-object-transfer) | Structured-object helpers for storing and retrieving DataProto-like payloads |
 | [Transfer Engine](transfer-engine) | High-performance RDMA/TCP data transfer between nodes |
+| [io_uring File I/O](uring) | `mooncake.uring` — io_uring file backend shared by Mooncake Store, vLLM and SGLang |
 | [EP Backend](ep-backend) | Expert-parallel backend for large MoE model deployment |
 
 :::{toctree}
@@ -14,5 +15,6 @@
 mooncake-store
 dataproto-structured-object-transfer
 transfer-engine
+uring
 ep-backend
 :::

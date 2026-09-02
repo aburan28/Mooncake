@@ -555,6 +555,91 @@ TEST(HandshakeFrameTest, RejectsInvalidLength) {
     close(fds[1]);
 }
 
+// The optional TCP capability fields and the "dpdk" endpoint fields must
+// survive the encode/decode round trip through the handshake channel, and
+// descriptors without them must decode to their zero defaults.
+TEST(TransferMetadataDataPlaneFieldsTest, TcpCapsAndDpdkEndpointRoundTrip) {
+    TransferMetadata server(P2PHANDSHAKE);
+    TransferMetadata client(P2PHANDSHAKE);
+
+    int sockfd = -1;
+    const uint16_t port = findAvailableTcpPort(sockfd);
+    ASSERT_GT(port, 0);
+    const std::string remote_segment_name = "127.0.0.1:" + std::to_string(port);
+
+    auto server_desc = std::make_shared<TransferMetadata::SegmentDesc>();
+    server_desc->name = remote_segment_name;
+    server_desc->protocol = "tcp";
+    server_desc->tcp_data_host = "127.0.0.1";
+    server_desc->tcp_data_port = port;
+    server_desc->tcp_proto_version = 2;
+    server_desc->tcp_caps = 0x3;
+    server_desc->tcp_zc_ports = {40001, 40002};
+    server_desc->dpdk_ip = "10.0.0.7";
+    server_desc->dpdk_udp_port = 5555;
+    server_desc->dpdk_mac = "02:00:00:00:00:07";
+    TransferMetadata::BufferDesc buffer;
+    buffer.name = remote_segment_name;
+    buffer.addr = 0x1000;
+    buffer.length = 0x1000;
+    server_desc->buffers.push_back(buffer);
+    ASSERT_EQ(server.addLocalSegment(LOCAL_SEGMENT_ID, remote_segment_name,
+                                     std::move(server_desc)),
+              0);
+
+    TransferMetadata::RpcMetaDesc rpc_desc;
+    rpc_desc.ip_or_host_name = "127.0.0.1";
+    rpc_desc.rpc_port = port;
+    rpc_desc.sockfd = sockfd;
+    ASSERT_EQ(server.addRpcMetaEntry(remote_segment_name, rpc_desc), 0);
+
+    auto client_desc = std::make_shared<TransferMetadata::SegmentDesc>();
+    client_desc->name = "127.0.0.1:0";
+    client_desc->protocol = "tcp";
+    ASSERT_EQ(client.addLocalSegment(LOCAL_SEGMENT_ID, "127.0.0.1:0",
+                                     std::move(client_desc)),
+              0);
+
+    const auto segment_id = client.getSegmentID(remote_segment_name);
+    ASSERT_NE(segment_id, static_cast<TransferMetadata::SegmentID>(-1));
+    auto remote_desc = client.getSegmentDescByID(segment_id, true);
+    ASSERT_NE(remote_desc, nullptr);
+    EXPECT_EQ(remote_desc->protocol, "tcp");
+    EXPECT_EQ(remote_desc->tcp_proto_version, 2);
+    EXPECT_EQ(remote_desc->tcp_caps, 0x3u);
+    ASSERT_EQ(remote_desc->tcp_zc_ports.size(), 2u);
+    EXPECT_EQ(remote_desc->tcp_zc_ports[0], 40001);
+    EXPECT_EQ(remote_desc->tcp_zc_ports[1], 40002);
+    EXPECT_EQ(remote_desc->dpdk_ip, "10.0.0.7");
+    EXPECT_EQ(remote_desc->dpdk_udp_port, 5555);
+    EXPECT_EQ(remote_desc->dpdk_mac, "02:00:00:00:00:07");
+    ASSERT_EQ(remote_desc->buffers.size(), 1u);
+    EXPECT_EQ(remote_desc->buffers[0].addr, 0x1000u);
+
+    // The client's own descriptor never set the optional fields.
+    auto local_desc = client.getSegmentDescByID(LOCAL_SEGMENT_ID);
+    ASSERT_NE(local_desc, nullptr);
+    EXPECT_EQ(local_desc->tcp_caps, 0u);
+    EXPECT_TRUE(local_desc->tcp_zc_ports.empty());
+    EXPECT_TRUE(local_desc->dpdk_ip.empty());
+    EXPECT_EQ(local_desc->dpdk_udp_port, 0);
+}
+
+TEST(TransferMetadataDataPlaneFieldsTest, EqualityCoversNewFields) {
+    TransferMetadata::SegmentDesc a{}, b{};
+    a.name = b.name = "x";
+    a.protocol = b.protocol = "tcp";
+    EXPECT_TRUE(a == b);
+    b.tcp_caps = 1;
+    EXPECT_FALSE(a == b);
+    b.tcp_caps = 0;
+    b.tcp_zc_ports.push_back(1);
+    EXPECT_FALSE(a == b);
+    b.tcp_zc_ports.clear();
+    b.dpdk_udp_port = 9;
+    EXPECT_FALSE(a == b);
+}
+
 }  // namespace mooncake
 
 int main(int argc, char** argv) {

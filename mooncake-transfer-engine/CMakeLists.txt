@@ -20,6 +20,7 @@ if (NOT GLOBAL_CONFIG)
   if(USE_TENT)
     mooncake_provide_liburing()
   endif()
+  mooncake_configure_iouring_tcp()
 
   add_subdirectory(../extern/pybind11
                    ${CMAKE_CURRENT_BINARY_DIR}/extern/pybind11)

@@ -71,7 +71,7 @@ Initializes the transfer engine with basic configuration.
 **Parameters:**
 - `local_hostname` (str): The hostname and port of the local server (e.g., "127.0.0.1:12345")
 - `metadata_server` (str): The metadata server connection string (e.g., "127.0.0.1:2379" or "etcd://127.0.0.1:2379")
-- `protocol` (str): The transport protocol to use ("rdma", "tcp", etc.)
+- `protocol` (str): The transport protocol to use ("rdma", "tcp", "efa", "dpdk", etc.). `"dpdk"` needs a build with `engine.SUPPORT_DPDK` and `MC_DPDK_PORTS` set; the `"tcp"` data plane is chosen with `MC_TCP_IO_BACKEND` (see [Supported Protocols](../../getting_started/supported-protocols.md))
 - `device_name` (str): Comma-separated list of device names to filter, or empty string for all devices
 
 **Returns:**
@@ -441,6 +441,44 @@ Waits for multiple batch asynchronous transfer operations to complete.
 **Returns:**
 - `int`: 0 if all transfers completed successfully, -1 if any transfer failed or timed out
 
+`get_batch_transfer_status()` blocks until every batch has finished and frees
+all of the batch IDs before returning. Use `batch_transfer_poll()` and
+`batch_transfer_free()` for a non-blocking completion loop.
+
+#### batch_transfer_poll()
+
+```python
+batch_transfer_poll(batch_ids)
+```
+
+Returns the current status of batches issued by `batch_transfer_async*()`
+without waiting and without freeing them. Failed and timed-out batches keep
+their ID until `batch_transfer_free()` is called. A batch counts as timed out
+under the same time budget `get_batch_transfer_status()` applies.
+
+**Parameters:**
+- `batch_ids` (List[int]): Batch IDs returned from batch async transfer operations
+
+**Returns:**
+- `List[int]`: One entry per batch ID: `0` when every task completed, `1` while any task is still in flight, `-1` when any task failed or timed out, or when the ID is unknown (never issued, or already freed)
+
+#### batch_transfer_free()
+
+```python
+batch_transfer_free(batch_ids)
+```
+
+Frees batch IDs issued by `batch_transfer_async*()` after
+`batch_transfer_poll()` reported `0` or `-1` for them. IDs that are unknown or
+already freed are ignored, so the call is safe to repeat; a batch that still
+has tasks in flight is left allocated and a warning is logged.
+
+**Parameters:**
+- `batch_ids` (List[int]): Batch IDs to release
+
+**Returns:**
+- `None`
+
 #### batch_transfer_write_on_cuda()
 
 ```python
@@ -775,6 +813,26 @@ ret = engine.batch_transfer_sync_write(
 if ret == 0:
     print("Batch transfer completed successfully")
 
+# Asynchronous batch write with a non-blocking completion loop
+import time
+
+batch_id = engine.batch_transfer_async_write(
+    "target_host:port", local_addrs, remote_addrs, lengths
+)
+if batch_id == 0:
+    print("Failed to submit batch transfer")
+else:
+    while True:
+        (state,) = engine.batch_transfer_poll([batch_id])
+        if state == 0:
+            print("Batch transfer completed successfully")
+            break
+        if state == -1:
+            print("Batch transfer failed or timed out")
+            break
+        time.sleep(0.0005)  # still in flight; yield instead of spinning
+    engine.batch_transfer_free([batch_id])
+
 # Cleanup
 engine.batch_unregister_memory(local_addrs)
 ```
@@ -851,6 +909,11 @@ The `mooncake.engine` module provides boolean attributes that indicate whether s
 - `engine.SUPPORT_MNNVL`: Whether MNNVL transport protocol support is enabled
 - `engine.SUPPORT_MUSA`: Whether the Moore Threads MUSA GPU IPC transport is enabled
 - `engine.SUPPORT_INTRA_NVLINK`: Whether intra-node NVLink support is enabled
+- `engine.SUPPORT_IOURING_TCP`: Whether the `tcp` transport can use its io_uring data plane (`MC_TCP_IO_BACKEND=io_uring`); the `tcp` protocol string is unchanged
+- `engine.SUPPORT_DPDK`: Whether the experimental `dpdk` kernel-bypass transport is compiled in (`-DUSE_DPDK=ON`)
+
+The io_uring file bindings live in a separate module, `mooncake.uring`, which
+exposes its own `SUPPORT_URING` attribute; see [io_uring File I/O](uring.md).
 
 ### Usage Example
 
@@ -868,4 +931,6 @@ print(f"HIP: {engine.SUPPORT_HIP}")
 print(f"MNNVL: {engine.SUPPORT_MNNVL}")
 print(f"MUSA: {engine.SUPPORT_MUSA}")
 print(f"Intra-NVLink: {engine.SUPPORT_INTRA_NVLINK}")
+print(f"io_uring TCP backend: {engine.SUPPORT_IOURING_TCP}")
+print(f"DPDK: {engine.SUPPORT_DPDK}")
 ```

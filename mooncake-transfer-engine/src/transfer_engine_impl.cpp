@@ -438,7 +438,19 @@ int TransferEngineImpl::init(const std::string& metadata_conn_string,
             }
         }
 #endif
-        // TODO: install other transports automatically
+#ifdef USE_DPDK
+        // The kernel-bypass transport coexists with rdma/tcp: it only claims
+        // requests whose target segment advertises protocol "dpdk".
+        if (getenv("MC_DPDK_PORTS")) {
+            Transport* dpdk_transport =
+                multi_transports_->installTransport("dpdk", local_topology_);
+            if (!dpdk_transport) {
+                LOG(ERROR) << "Failed to install DPDK transport";
+                return -1;
+            }
+            LOG(INFO) << "installTransport, type=dpdk";
+        }
+#endif
 
 #ifdef USE_HIP
         // HIP transport handles intra-node GPU P2P via XGMI/IPC and can
