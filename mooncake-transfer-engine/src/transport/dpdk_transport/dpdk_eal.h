@@ -50,7 +50,7 @@ struct Port {
     uint16_t port_id = 0;
     std::string spec;
     std::string name;
-    struct rte_ether_addr mac {};
+    struct rte_ether_addr mac{};
     uint16_t mtu = 1500;
     uint16_t nb_queues = 1;
     int socket_id = 0;

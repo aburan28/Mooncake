@@ -1652,13 +1652,13 @@ void expectEverySliceSucceededExactlyOnceAfterShutdown(
 // A macro, not a helper: GTEST_SKIP() returns from the function it appears
 // in, so from a helper it would mark the test skipped and then let its body
 // run on.
-#define SKIP_UNLESS_ASIO_BACKEND()                                         \
-    do {                                                                   \
-        if (TcpTransport::parseIoBackendEnv() !=                           \
-            TcpTransport::IoBackend::ASIO) {                               \
+#define SKIP_UNLESS_ASIO_BACKEND()                                          \
+    do {                                                                    \
+        if (TcpTransport::parseIoBackendEnv() !=                            \
+            TcpTransport::IoBackend::ASIO) {                                \
             GTEST_SKIP() << "asio-specific instrumentation; the io_uring "  \
                             "backend is covered by tcp_uring_backend_test"; \
-        }                                                                  \
+        }                                                                   \
     } while (0)
 
 TEST(TcpWriteVisibilityTest, CompletedWriteIsVisibleToSubsequentRead) {

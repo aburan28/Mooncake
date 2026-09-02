@@ -49,9 +49,8 @@ constexpr size_t kMaxBatchRequestBytes =
 
 [[noreturn]] void throwOsError(int err, const std::string& what,
                                const std::string& filename) {
-    py::object args = filename.empty()
-                          ? py::make_tuple(err, what)
-                          : py::make_tuple(err, what, filename);
+    py::object args = filename.empty() ? py::make_tuple(err, what)
+                                       : py::make_tuple(err, what, filename);
     PyErr_SetObject(PyExc_OSError, args.ptr());
     throw py::error_already_set();
 }

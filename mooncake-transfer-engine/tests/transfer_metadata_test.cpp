@@ -555,7 +555,6 @@ TEST(HandshakeFrameTest, RejectsInvalidLength) {
     close(fds[1]);
 }
 
-
 // The optional TCP capability fields and the "dpdk" endpoint fields must
 // survive the encode/decode round trip through the handshake channel, and
 // descriptors without them must decode to their zero defaults.

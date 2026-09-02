@@ -482,8 +482,8 @@ int TcpTransport::install(std::string& local_server_name,
         return 0;
     }
 
-    LOG(INFO) << "TcpTransport: listen on port " << tcp_port
-              << ", io backend " << ioBackendName(io_backend_);
+    LOG(INFO) << "TcpTransport: listen on port " << tcp_port << ", io backend "
+              << ioBackendName(io_backend_);
     auto metadata = metadata_;
     context_ = new TcpContext(tcp_port, [metadata = std::move(metadata)](
                                             uint64_t addr, uint64_t size) {
@@ -757,8 +757,8 @@ void TcpTransport::submitUring(std::vector<Slice*> slices) {
             PeerBatch batch;
             batch.host = desc->tcp_data_host;
             batch.port = static_cast<uint16_t>(desc->tcp_data_port);
-            batch.use_v2 =
-                desc->tcp_proto_version >= 2 && !tcp_wire::forceLegacyTcpProto();
+            batch.use_v2 = desc->tcp_proto_version >= 2 &&
+                           !tcp_wire::forceLegacyTcpProto();
             batch.caps = desc->tcp_caps;
             batch.zc_ports = desc->tcp_zc_ports;
             it = batches.emplace(slice->target_id, std::move(batch)).first;
@@ -769,7 +769,8 @@ void TcpTransport::submitUring(std::vector<Slice*> slices) {
     const size_t window = uring_->config().pipeline;
     for (auto& entry : batches) {
         PeerBatch& batch = entry.second;
-        for (size_t offset = 0; offset < batch.slices.size(); offset += window) {
+        for (size_t offset = 0; offset < batch.slices.size();
+             offset += window) {
             tcp_uring::LaneWork work;
             work.use_v2 = batch.use_v2;
             const size_t end = std::min(offset + window, batch.slices.size());

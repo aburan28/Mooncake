@@ -229,8 +229,8 @@ const ZeroCopyProbe &TcpZeroCopy::probe() {
     }
 
     std::string reason;
-    const int rc = probeInterfaceQueue(config_.iface, config_.rxqs.front(),
-                                       &reason);
+    const int rc =
+        probeInterfaceQueue(config_.iface, config_.rxqs.front(), &reason);
     if (rc < 0) {
         probe_result_.reason = reason;
         LOG(WARNING) << "TcpZeroCopy: " << reason
@@ -249,9 +249,9 @@ const ZeroCopyProbe &TcpZeroCopy::probe() {
     }
 
     if (probe_result_.zcrx_recv) {
-        LOG(INFO) << "TcpZeroCopy: zcrx receive available on "
-                  << config_.iface << " over " << config_.rxqs.size()
-                  << " queue(s), area " << config_.area_mb << " MiB";
+        LOG(INFO) << "TcpZeroCopy: zcrx receive available on " << config_.iface
+                  << " over " << config_.rxqs.size() << " queue(s), area "
+                  << config_.area_mb << " MiB";
     }
     return probe_result_;
 }

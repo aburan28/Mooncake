@@ -59,7 +59,7 @@ class Worker : public mktp::Sink {
         uint32_t ip = 0;              // host order
         int cpu = -1;                 // pin target, -1 = unpinned
         bool tx_zerocopy = false;
-        struct rte_ether_addr gateway_mac {};
+        struct rte_ether_addr gateway_mac{};
         bool use_gateway_mac = false;
         mktp::Params mktp;
     };

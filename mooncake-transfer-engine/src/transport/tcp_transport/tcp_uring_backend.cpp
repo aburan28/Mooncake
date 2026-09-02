@@ -217,7 +217,7 @@ struct Conn {
     // Client state
     std::shared_ptr<PeerGroup> group;
     size_t lane_index = 0;
-    struct sockaddr_storage peer_addr {};
+    struct sockaddr_storage peer_addr{};
     socklen_t peer_addr_len = 0;
     LaneWork work;
     bool has_work = false;
@@ -265,7 +265,7 @@ struct Op {
     uint32_t step = 0;
     uint64_t expect = 0;
     bool zc = false;
-    struct __kernel_timespec ts {};
+    struct __kernel_timespec ts{};
 };
 
 // Op records are recycled, so user_data carries a generation alongside the
@@ -1145,14 +1145,14 @@ class TcpUringBackend::Impl::Worker {
             PlanStep &step = conn->steps[index];
             if (step.done == step.len) continue;
             if (step.kind == StepKind::kRecvPay) return;  // stream misaligned
-            if (step.kind != StepKind::kRecvStatus) continue;  // sends read none
+            if (step.kind != StepKind::kRecvStatus)
+                continue;  // sends read none
             const size_t slot = step.req - conn->window_begin;
             char *base = reinterpret_cast<char *>(&conn->frames[slot]);
             while (step.done < step.len) {
-                const ssize_t got =
-                    recv(conn->fd, base + step.done,
-                         static_cast<size_t>(step.len - step.done),
-                         MSG_DONTWAIT);
+                const ssize_t got = recv(
+                    conn->fd, base + step.done,
+                    static_cast<size_t>(step.len - step.done), MSG_DONTWAIT);
                 if (got <= 0) return;
                 step.done += static_cast<uint64_t>(got);
             }
@@ -1478,8 +1478,8 @@ class TcpUringBackend::Impl::Worker {
                           buffer.len >= impl_->config.zc_threshold;
         int slot = -1;
         if (bulk && fixed_buffers_)
-            slot = findRegion(reinterpret_cast<uint64_t>(buffer.ptr),
-                              buffer.len);
+            slot =
+                findRegion(reinterpret_cast<uint64_t>(buffer.ptr), buffer.len);
         if (bulk && slot >= 0) {
             io_uring_prep_send_zc_fixed(s, conn->fd, buffer.ptr,
                                         static_cast<size_t>(buffer.len), flags,
@@ -1591,10 +1591,9 @@ class TcpUringBackend::Impl::Worker {
             return true;
         }
         if (!step.copy_pending) {
-            if (!pool->startCopy(step.chunk,
-                                 payloadBase(conn, step) + step.offset,
-                                 pool->host(step.chunk),
-                                 static_cast<size_t>(step.len))) {
+            if (!pool->startCopy(
+                    step.chunk, payloadBase(conn, step) + step.offset,
+                    pool->host(step.chunk), static_cast<size_t>(step.len))) {
                 conn->setError(EIO);
                 return true;
             }
@@ -1703,11 +1702,11 @@ class TcpUringBackend::Impl::Worker {
     }
 
     int findRegion(uint64_t addr, uint64_t length) const {
-        auto it = std::upper_bound(local_regions_.begin(), local_regions_.end(),
-                                   addr,
-                                   [](uint64_t value, const RegionEntry &e) {
-                                       return value < e.addr;
-                                   });
+        auto it =
+            std::upper_bound(local_regions_.begin(), local_regions_.end(), addr,
+                             [](uint64_t value, const RegionEntry &e) {
+                                 return value < e.addr;
+                             });
         if (it == local_regions_.begin()) return -1;
         --it;
         if (addr < it->addr || addr + length > it->addr + it->length) return -1;
@@ -1716,7 +1715,7 @@ class TcpUringBackend::Impl::Worker {
 
     Impl *impl_;
     size_t index_;
-    struct io_uring ring_ {};
+    struct io_uring ring_{};
     bool ring_ready_ = false;
     bool fixed_buffers_ = true;
     std::atomic<bool> ring_failed_{false};
@@ -1807,10 +1806,10 @@ int makeListener(int family, uint16_t port) {
 
 int TcpUringBackend::probe() {
     struct io_uring ring;
-    int ret = io_uring_queue_init(
-        8, &ring,
-        IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN |
-            IORING_SETUP_COOP_TASKRUN);
+    int ret = io_uring_queue_init(8, &ring,
+                                  IORING_SETUP_SINGLE_ISSUER |
+                                      IORING_SETUP_DEFER_TASKRUN |
+                                      IORING_SETUP_COOP_TASKRUN);
     if (ret == -EINVAL) ret = io_uring_queue_init(8, &ring, 0);
     if (ret < 0) return ret;
     io_uring_queue_exit(&ring);
@@ -1820,8 +1819,8 @@ int TcpUringBackend::probe() {
 TcpUringBackend::TcpUringBackend(UringConfig config,
                                  ValidateAddrFn validate_addr)
     : config_(std::move(config)),
-      impl_(std::make_unique<Impl>(config_, &stats_, std::move(validate_addr))) {
-}
+      impl_(
+          std::make_unique<Impl>(config_, &stats_, std::move(validate_addr))) {}
 
 TcpUringBackend::~TcpUringBackend() { stop(); }
 
@@ -1866,11 +1865,11 @@ int TcpUringBackend::start(uint16_t data_port,
         });
 
     for (size_t i = 0; i < config_.workers; ++i) {
-        const int listen_fd = i == 0 ? probe_fd : makeListener(family, data_port);
+        const int listen_fd =
+            i == 0 ? probe_fd : makeListener(family, data_port);
         if (listen_fd < 0) {
-            LOG(WARNING) << "TcpUring: only " << i
-                         << " listener(s) on port " << data_port << ": "
-                         << strerror(-listen_fd);
+            LOG(WARNING) << "TcpUring: only " << i << " listener(s) on port "
+                         << data_port << ": " << strerror(-listen_fd);
             if (i == 0) return -1;
             break;
         }
@@ -1896,10 +1895,9 @@ int TcpUringBackend::start(uint16_t data_port,
     }
     impl->running = true;
     LOG(INFO) << "TcpUring: " << impl->workers.size()
-              << " ring worker(s) on port " << data_port
-              << ", pipeline " << config_.pipeline << ", zc threshold "
-              << config_.zc_threshold << " bytes"
-              << (config_.sqpoll ? ", SQPOLL" : "");
+              << " ring worker(s) on port " << data_port << ", pipeline "
+              << config_.pipeline << ", zc threshold " << config_.zc_threshold
+              << " bytes" << (config_.sqpoll ? ", SQPOLL" : "");
     return 0;
 }
 
@@ -1964,8 +1962,8 @@ void TcpUringBackend::registerRegion(void *addr, size_t length) {
             impl_->slot_used[slot] = true;
             RegionEntry entry;
             entry.addr = base + offset;
-            entry.length = std::min<uint64_t>(kMaxFixedBufferSpan,
-                                              length - offset);
+            entry.length =
+                std::min<uint64_t>(kMaxFixedBufferSpan, length - offset);
             entry.origin = base;
             entry.slot = slot;
             impl_->regions.push_back(entry);

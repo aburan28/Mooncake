@@ -19,8 +19,8 @@
 
 // Wire format and tunables live in tcp_wire.h so that the io_uring backend
 // stays byte-compatible with this asio implementation.
-using tcp_wire::SessionHeader;
 using tcp_wire::getChunkSize;
+using tcp_wire::SessionHeader;
 
 #if defined(USE_CUDA) || defined(USE_MUSA) || defined(USE_HIP) ||  \
     defined(USE_MLU) || defined(USE_MACA) || defined(USE_HYGON) || \
@@ -90,9 +90,9 @@ using ValidateAddrFn = std::function<bool(uint64_t, uint64_t)>;
 // segment advertises tcp_proto_version >= 2, so old servers never see
 // flagged opcodes and old initiators keep receiving v1 framing.
 using tcp_wire::kOpcodeV2Flag;
+using tcp_wire::kStatusAddrRejected;
 using tcp_wire::kStatusMagic;
 using tcp_wire::kStatusOk;
-using tcp_wire::kStatusAddrRejected;
 using tcp_wire::statusFrameValid;
 
 // Operational escape hatch: MC_TCP_PROTO=1 forces initiators to speak the

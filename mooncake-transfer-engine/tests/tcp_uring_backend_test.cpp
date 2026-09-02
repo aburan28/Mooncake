@@ -107,8 +107,8 @@ struct Engine {
 
     // `backend` is applied before the engine exists because TcpTransport
     // latches MC_TCP_IO_BACKEND in its constructor.
-    void init(const char* backend, const std::string& server_name,
-              size_t size, const std::string& remote_segment_name = {}) {
+    void init(const char* backend, const std::string& server_name, size_t size,
+              const std::string& remote_segment_name = {}) {
         setenv("MC_TCP_IO_BACKEND", backend, 1);
         setenv("MC_TCP_ENABLE_CONNECTION_POOL", "1", 1);
         pool_size = size;
@@ -124,9 +124,9 @@ struct Engine {
         memset(pool, 0, pool_size);
         ASSERT_EQ(engine->registerLocalMemory(pool, pool_size, "cpu:0"), 0);
 
-        const std::string segment_name =
-            remote_segment_name.empty() ? engine->getLocalIpAndPort()
-                                        : remote_segment_name;
+        const std::string segment_name = remote_segment_name.empty()
+                                             ? engine->getLocalIpAndPort()
+                                             : remote_segment_name;
         segment_id = engine->openSegment(segment_name);
         auto desc = engine->getMetadata()->getSegmentDescByID(segment_id);
         ASSERT_NE(desc, nullptr);
@@ -154,8 +154,7 @@ struct Pair {
         server.init(server_backend, "127.0.0.2:" + std::to_string(base_port),
                     size);
         if (!server.ok) return;
-        const std::string server_segment =
-            server.engine->getLocalIpAndPort();
+        const std::string server_segment = server.engine->getLocalIpAndPort();
         client.init(client_backend,
                     "127.0.0.2:" + std::to_string(base_port + 1), size,
                     server_segment);
@@ -167,10 +166,9 @@ struct Pair {
     uint64_t target() const { return client.remote_base; }
 };
 
-TransferStatusEnum runBatch(TransferEngine* engine,
-                            const std::vector<TransferRequest>& requests,
-                            std::chrono::seconds timeout =
-                                std::chrono::seconds(30)) {
+TransferStatusEnum runBatch(
+    TransferEngine* engine, const std::vector<TransferRequest>& requests,
+    std::chrono::seconds timeout = std::chrono::seconds(30)) {
     auto batch_id = engine->allocateBatchID(requests.size());
     if (!engine->submitTransfer(batch_id, requests).ok())
         return TransferStatusEnum::FAILED;
@@ -211,9 +209,8 @@ bool matchesPattern(const char* buffer, size_t length, uint32_t seed) {
 }
 
 const std::vector<size_t>& transferLengths() {
-    static const std::vector<size_t> lengths = {0,          1,
-                                                4095,       65536,
-                                                (2u << 20) + 1, 32u << 20};
+    static const std::vector<size_t> lengths = {
+        0, 1, 4095, 65536, (2u << 20) + 1, 32u << 20};
     return lengths;
 }
 
@@ -473,8 +470,8 @@ TEST(TcpUringBackend, RejectedSliceInGroupDoesNotPoisonTheRest) {
         request.source = src + i * kLength;
         request.target_id = pair.client.segment_id;
         // The third slice targets memory the server never registered.
-        request.target_offset = i == 2 ? pair.target() + (1ull << 40)
-                                       : pair.target() + i * kLength;
+        request.target_offset =
+            i == 2 ? pair.target() + (1ull << 40) : pair.target() + i * kLength;
         requests.push_back(request);
     }
 
@@ -622,10 +619,10 @@ TEST(TcpZeroCopyPlanner, ScatterReproducesTheStream) {
     size_t consumed = 0;
     for (size_t i = 0; i < 4; ++i) {
         memcpy(area.data() + offsets[i], expected.data() + consumed, sizes[i]);
-        ASSERT_TRUE(planner.add(
-            ZcFragment{offsets[i], static_cast<uint32_t>(sizes[i]),
-                       static_cast<uint32_t>(i)},
-            &ops));
+        ASSERT_TRUE(
+            planner.add(ZcFragment{offsets[i], static_cast<uint32_t>(sizes[i]),
+                                   static_cast<uint32_t>(i)},
+                        &ops));
         consumed += sizes[i];
     }
     ASSERT_TRUE(planner.complete());
@@ -655,8 +652,8 @@ TEST(TcpZeroCopyNegotiation, RequiresPeerCapabilityAndPorts) {
     // A peer without the bit, without ports, or a payload below the split
     // threshold keeps the single-connection path.
     EXPECT_FALSE(TcpZeroCopy::shouldUseDataLane(0, ports, 1 << 20, 1 << 20));
-    EXPECT_FALSE(TcpZeroCopy::shouldUseDataLane(tcp_wire::TCP_CAP_ZCRX_RECV,
-                                                {}, 1 << 20, 1 << 20));
+    EXPECT_FALSE(TcpZeroCopy::shouldUseDataLane(tcp_wire::TCP_CAP_ZCRX_RECV, {},
+                                                1 << 20, 1 << 20));
     EXPECT_FALSE(TcpZeroCopy::shouldUseDataLane(tcp_wire::TCP_CAP_ZCRX_RECV,
                                                 ports, 4096, 1 << 20));
     // The transmit bit alone never enables a receive-side data lane.
@@ -721,8 +718,7 @@ TEST(TcpZeroCopyNegotiation, SegmentDescCarriesCapabilities) {
     desc.tcp_data_host = "127.0.0.1";
     desc.tcp_data_port = 18000;
     desc.tcp_proto_version = 2;
-    desc.tcp_caps =
-        tcp_wire::TCP_CAP_ZCRX_RECV | tcp_wire::TCP_CAP_DEVMEM_SEND;
+    desc.tcp_caps = tcp_wire::TCP_CAP_ZCRX_RECV | tcp_wire::TCP_CAP_DEVMEM_SEND;
     desc.tcp_zc_ports = {18001, 18002};
     EXPECT_TRUE(TcpZeroCopy::shouldUseDataLane(desc.tcp_caps, desc.tcp_zc_ports,
                                                4ull << 20, 1ull << 20));

@@ -149,9 +149,9 @@ class LanePool {
                                       const std::shared_ptr<PeerGroup> &group,
                                       size_t lane_index)>;
     // Asks the group's home worker to call tick() at `deadline`.
-    using TimerFn = std::function<void(
-        const std::shared_ptr<PeerGroup> &group,
-        std::chrono::steady_clock::time_point deadline)>;
+    using TimerFn =
+        std::function<void(const std::shared_ptr<PeerGroup> &group,
+                           std::chrono::steady_clock::time_point deadline)>;
 
     LanePool(LaneConfig config, size_t worker_count, PumpFn pump,
              TimerFn timer);
@@ -200,10 +200,10 @@ class LanePool {
                                 std::deque<LaneWork> &expired);
     void wakeLanesLocked(const std::shared_ptr<PeerGroup> &group,
                          std::vector<std::pair<size_t, size_t>> &wakes);
-    void requestTimerLocked(const std::shared_ptr<PeerGroup> &group,
-                            std::chrono::steady_clock::time_point deadline,
-                            std::optional<std::chrono::steady_clock::time_point>
-                                &timer_request);
+    void requestTimerLocked(
+        const std::shared_ptr<PeerGroup> &group,
+        std::chrono::steady_clock::time_point deadline,
+        std::optional<std::chrono::steady_clock::time_point> &timer_request);
 
     LaneConfig config_;
     size_t worker_count_;

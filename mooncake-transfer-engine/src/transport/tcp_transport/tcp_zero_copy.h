@@ -39,11 +39,11 @@ namespace mooncake {
 namespace tcp_uring {
 
 struct ZeroCopyConfig {
-    bool enabled = false;         // MC_TCP_ZC
-    std::string iface;            // MC_TCP_ZC_IFACE
-    std::vector<uint32_t> rxqs;   // MC_TCP_ZC_RXQS, e.g. "8,9"
-    size_t area_mb = 512;         // MC_TCP_ZCRX_AREA_MB
-    bool devmem_send = true;      // transmit side follows the same switch
+    bool enabled = false;        // MC_TCP_ZC
+    std::string iface;           // MC_TCP_ZC_IFACE
+    std::vector<uint32_t> rxqs;  // MC_TCP_ZC_RXQS, e.g. "8,9"
+    size_t area_mb = 512;        // MC_TCP_ZCRX_AREA_MB
+    bool devmem_send = true;     // transmit side follows the same switch
 
     static ZeroCopyConfig fromEnv();
 };

@@ -91,9 +91,9 @@ LanePool::LanePool(LaneConfig config, size_t worker_count, PumpFn pump,
       pump_(std::move(pump)),
       timer_(std::move(timer)) {}
 
-void LanePool::expireAndPromoteLocked(
-    PeerGroup &group, std::chrono::steady_clock::time_point now,
-    std::deque<LaneWork> &expired) {
+void LanePool::expireAndPromoteLocked(PeerGroup &group,
+                                      std::chrono::steady_clock::time_point now,
+                                      std::deque<LaneWork> &expired) {
     while (!group.pending.empty() &&
            group.pending.front().admission_deadline <= now) {
         expired.emplace_back(std::move(group.pending.front()));
@@ -173,7 +173,8 @@ bool LanePool::submit(const PeerKey &key, LaneWork work) {
                 rejected.emplace(std::move(work));
             }
             if (!group->pending.empty())
-                requestTimerLocked(group, group->pending.front().admission_deadline,
+                requestTimerLocked(group,
+                                   group->pending.front().admission_deadline,
                                    timer_request);
             wakeLanesLocked(group, wakes);
         }
@@ -227,8 +228,7 @@ bool LanePool::beginConnect(const std::shared_ptr<PeerGroup> &group,
             !group->closed) {
             const auto now = std::chrono::steady_clock::now();
             if (now < group->cooldown_until) {
-                requestTimerLocked(group, group->cooldown_until,
-                                   timer_request);
+                requestTimerLocked(group, group->cooldown_until, timer_request);
             } else {
                 lane.state = LaneState::CONNECTING;
                 begin = true;
