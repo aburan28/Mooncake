@@ -206,6 +206,20 @@ int TransferEnginePy::initializeExt(const char* local_hostname,
                    << "Use 'hip' instead.";
         return -1;
     }
+    if (strcmp(protocol, "dpdk") == 0) {
+#ifndef USE_DPDK
+        LOG(ERROR) << "Protocol 'dpdk' requires a build with -DUSE_DPDK=ON "
+                   << "(engine.SUPPORT_DPDK is False). Use 'tcp' or 'rdma'.";
+        return -1;
+#else
+        if (!getenv("MC_DPDK_PORTS")) {
+            LOG(ERROR) << "Protocol 'dpdk' requires MC_DPDK_PORTS to name the "
+                       << "port(s) to use (a PCI address or "
+                       << "net_af_xdp,iface=<interface>)";
+            return -1;
+        }
+#endif
+    }
 
     std::string proto = protocol ? std::string(protocol) : "";
     std::string conn_string = buildConnString(metadata_type, metadata_server);
@@ -329,6 +343,21 @@ int TransferEnginePy::initializeExt(const char* local_hostname,
             return -1;
         }
         LOG(INFO) << "FlagCX transport installed successfully";
+    }
+#endif
+
+#ifdef USE_DPDK
+    // TransferEngineImpl::init installs "dpdk" itself when MC_DPDK_PORTS is
+    // set and auto-discovery is on; cover the builds that disable discovery.
+    if (proto == "dpdk" && !engine_->getTransport("dpdk")) {
+        LOG(INFO)
+            << "Installing DPDK transport as requested by protocol parameter";
+        auto transport = engine_->installTransport("dpdk", nullptr);
+        if (!transport) {
+            LOG(ERROR) << "Failed to install DPDK transport";
+            return -1;
+        }
+        LOG(INFO) << "DPDK transport installed successfully";
     }
 #endif
 
@@ -754,12 +783,81 @@ batch_id_t TransferEnginePy::batchTransferAsync(
         }
     }
 
+    if (batch_id) {
+        std::lock_guard<std::mutex> guard(batch_mutex_);
+        async_batches_.insert(batch_id);
+    }
     return batch_id;
+}
+
+std::vector<int> TransferEnginePy::batchTransferPoll(
+    const std::vector<batch_id_t>& batch_ids) {
+    pybind11::gil_scoped_release release;
+    std::vector<int> results;
+    results.reserve(batch_ids.size());
+    for (auto batch_id : batch_ids) {
+        {
+            std::lock_guard<std::mutex> guard(batch_mutex_);
+            if (!async_batches_.count(batch_id)) {
+                results.push_back(-1);
+                continue;
+            }
+        }
+        TransferStatus status;
+        Status s = engine_->getBatchTransferStatus(batch_id, status);
+        if (!s.ok() || status.s == TransferStatusEnum::FAILED ||
+            status.s == TransferStatusEnum::TIMEOUT) {
+            results.push_back(-1);
+            continue;
+        }
+        if (status.s == TransferStatusEnum::COMPLETED) {
+            results.push_back(0);
+            continue;
+        }
+        // Same time budget as getBatchTransferStatus: the fixed timeout plus
+        // one nanosecond per byte (1 GiB/s).
+        auto batch_desc = reinterpret_cast<BatchDesc*>(batch_id);
+        int64_t total_length = 0;
+        for (auto& task : batch_desc->task_list) {
+            for (auto& slice : task.slice_list) total_length += slice->length;
+        }
+        const int64_t elapsed =
+            getCurrentTimeInNano() - batch_desc->start_timestamp;
+        if (elapsed > total_length + (int64_t)transfer_timeout_nsec_) {
+            LOG(WARNING) << "batchTransferPoll: batch " << batch_id
+                         << " timed out after " << elapsed << "ns";
+            results.push_back(-1);
+        } else {
+            results.push_back(1);
+        }
+    }
+    return results;
+}
+
+void TransferEnginePy::batchTransferFree(
+    const std::vector<batch_id_t>& batch_ids) {
+    pybind11::gil_scoped_release release;
+    std::lock_guard<std::mutex> guard(batch_mutex_);
+    for (auto batch_id : batch_ids) {
+        if (!async_batches_.count(batch_id)) continue;
+        Status s = engine_->freeBatchID(batch_id);
+        if (s.ok()) {
+            async_batches_.erase(batch_id);
+        } else {
+            LOG(WARNING) << "batchTransferFree: batch " << batch_id
+                         << " still has tasks in flight and was not freed";
+        }
+    }
 }
 
 int TransferEnginePy::getBatchTransferStatus(
     const std::vector<batch_id_t>& batch_ids) {
     pybind11::gil_scoped_release release;
+    {
+        // Every id is freed before this call returns.
+        std::lock_guard<std::mutex> guard(batch_mutex_);
+        for (auto batch_id : batch_ids) async_batches_.erase(batch_id);
+    }
     TransferStatus status;
     std::unordered_map<batch_id_t, int64_t> timeout_table{};
     for (auto& batch_id : batch_ids) {
@@ -1242,6 +1340,18 @@ PYBIND11_MODULE(engine, m) {
     m.attr("SUPPORT_CUDA") = false;
 #endif
 
+#ifdef USE_IOURING_TCP
+    m.attr("SUPPORT_IOURING_TCP") = true;
+#else
+    m.attr("SUPPORT_IOURING_TCP") = false;
+#endif
+
+#ifdef USE_DPDK
+    m.attr("SUPPORT_DPDK") = true;
+#else
+    m.attr("SUPPORT_DPDK") = false;
+#endif
+
     py::enum_<TransferEnginePy::TransferOpcode> transfer_opcode(
         m, "TransferOpcode", py::arithmetic());
     transfer_opcode.value("Read", TransferEnginePy::TransferOpcode::READ)
@@ -1329,6 +1439,17 @@ PYBIND11_MODULE(engine, m) {
 #endif
             .def("get_batch_transfer_status",
                  &TransferEnginePy::getBatchTransferStatus)
+            .def("batch_transfer_poll", &TransferEnginePy::batchTransferPoll,
+                 py::arg("batch_ids"),
+                 "Non-blocking status of batches returned by "
+                 "batch_transfer_async*: one entry per id, 0 = completed, "
+                 "1 = in flight, -1 = failed, timed out or unknown. Never "
+                 "frees a batch; call batch_transfer_free afterwards.")
+            .def("batch_transfer_free", &TransferEnginePy::batchTransferFree,
+                 py::arg("batch_ids"),
+                 "Free batch ids returned by batch_transfer_async* once "
+                 "batch_transfer_poll reported 0 or -1. Ids that are unknown "
+                 "or already freed are ignored.")
             .def("transfer_submit_write",
                  &TransferEnginePy::transferSubmitWrite,
                  py::arg("target_hostname"), py::arg("buffer"),

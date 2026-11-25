@@ -430,6 +430,21 @@ int TransferMetadata::encodeSegmentDesc(const SegmentDesc &desc,
     if (!desc.rdma_server_name.empty()) {
         segmentJSON["rdma_server_name"] = desc.rdma_server_name;
     }
+    if (desc.tcp_caps != 0) {
+        segmentJSON["tcp_caps"] = static_cast<Json::UInt>(desc.tcp_caps);
+    }
+    if (!desc.tcp_zc_ports.empty()) {
+        Json::Value portsJSON(Json::arrayValue);
+        for (const auto port : desc.tcp_zc_ports)
+            portsJSON.append(static_cast<Json::UInt>(port));
+        segmentJSON["tcp_zc_ports"] = portsJSON;
+    }
+    if (!desc.dpdk_ip.empty()) {
+        segmentJSON["dpdk_ip"] = desc.dpdk_ip;
+        segmentJSON["dpdk_udp_port"] =
+            static_cast<Json::UInt>(desc.dpdk_udp_port);
+        segmentJSON["dpdk_mac"] = desc.dpdk_mac;
+    }
 
     if (segmentJSON["protocol"] == "rdma" ||
         segmentJSON["protocol"] == "barex" ||
@@ -484,7 +499,8 @@ int TransferMetadata::encodeSegmentDesc(const SegmentDesc &desc,
         segmentJSON["buffers"] = buffersJSON;
         segmentJSON["priority_matrix"] = desc.topology.toJson();
     } else if (segmentJSON["protocol"] == "tcp" ||
-               segmentJSON["protocol"] == "flagcx") {
+               segmentJSON["protocol"] == "flagcx" ||
+               segmentJSON["protocol"] == "dpdk") {
         Json::Value buffersJSON(Json::arrayValue);
         for (const auto &buffer : desc.buffers) {
             Json::Value bufferJSON;
@@ -630,6 +646,33 @@ int TransferMetadata::removeSegmentDesc(const std::string &segment_name) {
     return 0;
 }
 
+// Optional data-plane fields shared by every protocol branch: TCP capability
+// bits, zero-copy RX ports, and the DPDK endpoint. Absent fields keep their
+// zero defaults so descriptors from older peers decode unchanged.
+static void decodeDataPlaneFields(const Json::Value &segmentJSON,
+                                  TransferMetadata::SegmentDesc &desc) {
+    if (segmentJSON.isMember("tcp_caps") && segmentJSON["tcp_caps"].isUInt())
+        desc.tcp_caps = segmentJSON["tcp_caps"].asUInt();
+    if (segmentJSON.isMember("tcp_zc_ports") &&
+        segmentJSON["tcp_zc_ports"].isArray()) {
+        for (const auto &portJSON : segmentJSON["tcp_zc_ports"]) {
+            if (portJSON.isUInt() && portJSON.asUInt() <= 65535)
+                desc.tcp_zc_ports.push_back(
+                    static_cast<uint16_t>(portJSON.asUInt()));
+        }
+    }
+    if (segmentJSON.isMember("dpdk_ip") && segmentJSON["dpdk_ip"].isString()) {
+        desc.dpdk_ip = segmentJSON["dpdk_ip"].asString();
+        if (segmentJSON.isMember("dpdk_udp_port") &&
+            segmentJSON["dpdk_udp_port"].isUInt())
+            desc.dpdk_udp_port =
+                static_cast<uint16_t>(segmentJSON["dpdk_udp_port"].asUInt());
+        if (segmentJSON.isMember("dpdk_mac") &&
+            segmentJSON["dpdk_mac"].isString())
+            desc.dpdk_mac = segmentJSON["dpdk_mac"].asString();
+    }
+}
+
 #ifdef ENABLE_MULTI_PROTOCOL
 static std::shared_ptr<TransferMetadata::SegmentDesc>
 decodeMultiProtocolSegmentDesc(Json::Value &segmentJSON,
@@ -648,6 +691,7 @@ decodeMultiProtocolSegmentDesc(Json::Value &segmentJSON,
         desc->timestamp = segmentJSON["timestamp"].asString();
     if (segmentJSON.isMember("rdma_server_name"))
         desc->rdma_server_name = segmentJSON["rdma_server_name"].asString();
+    decodeDataPlaneFields(segmentJSON, *desc);
 
     for (const auto &protocolStr : segmentJSON["protocol"]) {
         std::string proto = protocolStr.asString();
@@ -817,6 +861,7 @@ TransferMetadata::decodeSegmentDesc(Json::Value &segmentJSON,
         desc->timestamp = segmentJSON["timestamp"].asString();
     if (segmentJSON.isMember("rdma_server_name"))
         desc->rdma_server_name = segmentJSON["rdma_server_name"].asString();
+    decodeDataPlaneFields(segmentJSON, *desc);
 
     if (desc->protocol == "rdma" || desc->protocol == "barex" ||
         desc->protocol == "efa" || desc->protocol == "cxi") {
@@ -917,7 +962,8 @@ TransferMetadata::decodeSegmentDesc(Json::Value &segmentJSON,
             LOG(WARNING) << "Corrupted segment descriptor, name "
                          << segment_name << " protocol " << desc->protocol;
         }
-    } else if (desc->protocol == "tcp" || desc->protocol == "flagcx") {
+    } else if (desc->protocol == "tcp" || desc->protocol == "flagcx" ||
+               desc->protocol == "dpdk") {
         for (const auto &bufferJSON : segmentJSON["buffers"]) {
             BufferDesc buffer;
             buffer.name = bufferJSON["name"].asString();
@@ -1169,7 +1215,10 @@ bool TransferMetadata::SegmentDesc::operator==(const SegmentDesc &other) const {
            rank_info == other.rank_info &&
            tcp_data_host == other.tcp_data_host &&
            tcp_data_port == other.tcp_data_port &&
-           rdma_server_name == other.rdma_server_name;
+           rdma_server_name == other.rdma_server_name &&
+           tcp_caps == other.tcp_caps && tcp_zc_ports == other.tcp_zc_ports &&
+           dpdk_ip == other.dpdk_ip && dpdk_udp_port == other.dpdk_udp_port &&
+           dpdk_mac == other.dpdk_mac;
 }
 
 int TransferMetadata::syncSegmentCache(const std::string &segment_name) {
@@ -1586,6 +1635,7 @@ int TransferMetadata::startHandshakeDaemon(
     if (rc != 0) {
         return rc;
     }
+    handshake_daemon_started_ = true;
     return 0;
 }
 

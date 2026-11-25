@@ -85,6 +85,7 @@ fi
 # Parse command line arguments
 SKIP_CONFIRM=false
 INSTALL_SPDK=false
+INSTALL_DPDK=false
 for arg in "$@"; do
     case $arg in
         -y|--yes)
@@ -93,12 +94,16 @@ for arg in "$@"; do
         --with-spdk)
             INSTALL_SPDK=true
             ;;
+        --with-dpdk)
+            INSTALL_DPDK=true
+            ;;
         -h|--help)
             echo -e "${YELLOW}Mooncake Dependencies Installer${NC}"
             echo -e "Usage: ./dependencies.sh [OPTIONS]"
             echo -e "\nOptions:"
             echo -e "  -y, --yes       Skip confirmation and install all dependencies"
             echo -e "  --with-spdk     Install SPDK for NVMe-oF support"
+            echo -e "  --with-dpdk     Install DPDK development files for the dpdk transport (-DUSE_DPDK=ON)"
             echo -e "  -h, --help      Show this help message and exit"
             exit 0
             ;;
@@ -114,6 +119,9 @@ echo -e "  - Git submodules (pybind11)"
 echo -e "  - Go $GOVER"
 if [ "$INSTALL_SPDK" = true ]; then
     echo -e "  - SPDK (for NVMe-oF support)"
+fi
+if [ "$INSTALL_DPDK" = true ]; then
+    echo -e "  - DPDK development files (for the dpdk transport)"
 fi
 echo
 
@@ -183,6 +191,11 @@ if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
                      libc6-dev \
                      libc-bin"
 
+    if [ "$INSTALL_DPDK" = true ]; then
+        # Optional: DPDK 23.11 LTS or newer for the kernel-bypass transport.
+        SYSTEM_PACKAGES="$SYSTEM_PACKAGES dpdk-dev libdpdk-dev"
+    fi
+
     apt-get install -y $SYSTEM_PACKAGES
     check_success "Failed to install system packages"
 
@@ -214,6 +227,10 @@ elif [ "$OS" = "centos" ] || [ "$OS" = "rhel" ] || [ "$OS" = "rocky" ] || [ "$OS
                      patchelf  \
                      xxhash-devel \
                      libbsd-devel"
+
+    if [ "$INSTALL_DPDK" = true ]; then
+        SYSTEM_PACKAGES="$SYSTEM_PACKAGES dpdk-devel"
+    fi
 
     yum install -y $SYSTEM_PACKAGES
     check_success "Failed to install system packages"

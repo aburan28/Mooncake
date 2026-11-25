@@ -31,6 +31,8 @@
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 #include <json/json.h>
+
+#include "transport/tcp_transport/tcp_transport.h"
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -1640,6 +1642,25 @@ void expectEverySliceSucceededExactlyOnceAfterShutdown(
 
 }  // namespace
 
+// This suite is white-box coverage of the asio data plane: most cases install
+// lane hooks and assert on that scheduler's internals (admission queues,
+// connect rounds, retry timers, endpoint retirement). The io_uring backend is
+// a separate implementation with its own lane pool, so those cases opt out
+// when it is selected; its wire-level behaviour -- including everything this
+// suite checks about framing, visibility and rejection -- is covered by
+// tcp_uring_backend_test.
+// A macro, not a helper: GTEST_SKIP() returns from the function it appears
+// in, so from a helper it would mark the test skipped and then let its body
+// run on.
+#define SKIP_UNLESS_ASIO_BACKEND()                                          \
+    do {                                                                    \
+        if (TcpTransport::parseIoBackendEnv() !=                            \
+            TcpTransport::IoBackend::ASIO) {                                \
+            GTEST_SKIP() << "asio-specific instrumentation; the io_uring "  \
+                            "backend is covered by tcp_uring_backend_test"; \
+        }                                                                   \
+    } while (0)
+
 TEST(TcpWriteVisibilityTest, CompletedWriteIsVisibleToSubsequentRead) {
     const char* env = std::getenv("MC_METADATA_SERVER");
     std::string metadata_server = env ? env : "P2PHANDSHAKE";
@@ -1855,6 +1876,7 @@ TEST(TcpWriteVisibilityTest, V2ReadRoundTripAndRejectedRead) {
 // lane (with the old weaker WRITE completion semantics).
 TEST(TcpWriteVisibilityTest,
      PooledLegacyInitiatorInteroperatesWithCurrentServer) {
+    SKIP_UNLESS_ASIO_BACKEND();
     const char* env = std::getenv("MC_METADATA_SERVER");
     std::string metadata_server = env ? env : "P2PHANDSHAKE";
     // Set the process environment before the engine starts any threads, and
@@ -1923,6 +1945,7 @@ TEST(TcpWriteVisibilityTest,
 // released the caller-owned source buffer.
 TEST(TcpWriteVisibilityTest,
      StaleV2DescriptorAgainstLegacyServerQuiescesWriteBeforeFailure) {
+    SKIP_UNLESS_ASIO_BACKEND();
     const char* env = std::getenv("MC_METADATA_SERVER");
     std::string metadata_server = env ? env : "P2PHANDSHAKE";
     EngineHandle h;
@@ -1978,6 +2001,7 @@ TEST(TcpWriteVisibilityTest,
 // with it they must fail, and only after actually waiting the deadline out
 // (an early failure would mean something else broke).
 TEST(TcpWriteVisibilityTest, StaleV2DescriptorShortRequestFailsWithinDeadline) {
+    SKIP_UNLESS_ASIO_BACKEND();
     ScopedEnvVar fast_deadline("MC_TCP_STATUS_TIMEOUT_SEC", "2");
     const char* env = std::getenv("MC_METADATA_SERVER");
     std::string metadata_server = env ? env : "P2PHANDSHAKE";
@@ -2123,6 +2147,7 @@ TEST(TcpWriteVisibilityTest, PerPeerLaneAndQueueBoundsHoldUnderLoad) {
 #ifdef MOONCAKE_TCP_TRANSPORT_TEST_HOOKS
 TEST(TcpWriteVisibilityTest,
      FailedLaneReconnectsWhileSiblingLaneRemainsUsable) {
+    SKIP_UNLESS_ASIO_BACKEND();
     constexpr int kRequestCount = 3;
     constexpr size_t kLength = 64 * 1024;
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "2");
@@ -2185,6 +2210,7 @@ TEST(TcpWriteVisibilityTest,
 
 TEST(TcpWriteVisibilityTest,
      ConnectFailedLaneRetriesWhileSiblingLaneRemainsUsable) {
+    SKIP_UNLESS_ASIO_BACKEND();
     constexpr int kRequestCount = 2;
     constexpr size_t kLength = 64 * 1024;
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "2");
@@ -2241,6 +2267,7 @@ TEST(TcpWriteVisibilityTest,
 }
 
 TEST(TcpWriteVisibilityTest, DirtyLastUsableLaneStartsFreshConnectRound) {
+    SKIP_UNLESS_ASIO_BACKEND();
     constexpr int kRequestCount = 2;
     constexpr size_t kLength = 64 * 1024;
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
@@ -2299,6 +2326,7 @@ TEST(TcpWriteVisibilityTest, DirtyLastUsableLaneStartsFreshConnectRound) {
 
 TEST(TcpWriteVisibilityTest,
      ReconnectProbePrefersNeverTriedLanesOverFailedLane) {
+    SKIP_UNLESS_ASIO_BACKEND();
     constexpr int kRequestCount = 5;
     constexpr size_t kLength = 64 * 1024;
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "4");
@@ -2352,6 +2380,7 @@ TEST(TcpWriteVisibilityTest,
 
 TEST(TcpWriteVisibilityTest,
      QueuedWorkAndBusyLanesCompleteExactlyOnceDuringShutdown) {
+    SKIP_UNLESS_ASIO_BACKEND();
     constexpr int kRequestCount = 16;
     constexpr size_t kLength = 64 * 1024;
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "2");
@@ -2408,6 +2437,7 @@ TEST(TcpWriteVisibilityTest,
 #ifdef MOONCAKE_TCP_TRANSPORT_TEST_HOOKS
 TEST(TcpWriteVisibilityTest,
      ConnectingLaneShutdownDetachesOwnershipAndIgnoresLateHandler) {
+    SKIP_UNLESS_ASIO_BACKEND();
     constexpr size_t kLength = 64 * 1024;
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     ScopedEnvVar queue_capacity("MC_TCP_MAX_QUEUED_TRANSFERS_PER_PEER", "8");
@@ -2471,6 +2501,7 @@ TEST(TcpWriteVisibilityTest,
 
 TEST(TcpWriteVisibilityTest,
      ReconnectRoundsAreRateLimitedAndCooldownQueueIsBounded) {
+    SKIP_UNLESS_ASIO_BACKEND();
     constexpr int kCooldownRequestCount = 4;
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     ScopedEnvVar queue_capacity("MC_TCP_MAX_QUEUED_TRANSFERS_PER_PEER", "3");
@@ -2565,6 +2596,7 @@ TEST(TcpWriteVisibilityTest,
 
 TEST(TcpWriteVisibilityTest,
      RetryTimerSerializesDelayedPumpAndCooldownTransition) {
+    SKIP_UNLESS_ASIO_BACKEND();
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     ScopedEnvVar queue_capacity("MC_TCP_MAX_QUEUED_TRANSFERS_PER_PEER", "2");
     ScopedLaneHooks hooks(/*block_first_connect_handler=*/false,
@@ -2657,6 +2689,7 @@ TEST(TcpWriteVisibilityTest,
 
 TEST(TcpWriteVisibilityTest,
      ShutdownWithPendingRetryTimerCompletesAcceptedWorkOnce) {
+    SKIP_UNLESS_ASIO_BACKEND();
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     ScopedEnvVar queue_capacity("MC_TCP_MAX_QUEUED_TRANSFERS_PER_PEER", "4");
     ScopedLaneHooks hooks;
@@ -2717,6 +2750,7 @@ TEST(TcpWriteVisibilityTest,
 
 TEST(TcpWriteVisibilityTest,
      ShutdownInvalidatesPendingRetryAndLateHandlerCannotReconnect) {
+    SKIP_UNLESS_ASIO_BACKEND();
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     ScopedEnvVar queue_capacity("MC_TCP_MAX_QUEUED_TRANSFERS_PER_PEER", "4");
     ScopedLaneHooks hooks(/*block_first_connect_handler=*/false,
@@ -2797,6 +2831,7 @@ TEST(TcpWriteVisibilityTest,
 
 TEST(TcpWriteVisibilityTest,
      TaskGroupShutdownCompletesNotYetStartedSlicesExactlyOnce) {
+    SKIP_UNLESS_ASIO_BACKEND();
     constexpr int kRequestCount = 3;
     constexpr size_t kLength = 64 * 1024;
 
@@ -2931,6 +2966,7 @@ TEST(TcpWriteVisibilityTest, OneLaneReusesCleanSocketInFifoOrder) {
 #ifdef MOONCAKE_TCP_TRANSPORT_TEST_HOOKS
 TEST(TcpWriteVisibilityTest,
      PendingAdmissionWaitsInsteadOfFailingSynchronously) {
+    SKIP_UNLESS_ASIO_BACKEND();
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     ScopedEnvVar queue_capacity("MC_TCP_MAX_QUEUED_TRANSFERS_PER_PEER", "1");
     ScopedEnvVar pending_capacity("MC_TCP_MAX_PENDING_ADMISSIONS_PER_PEER",
@@ -2980,6 +3016,7 @@ TEST(TcpWriteVisibilityTest,
 }
 
 TEST(TcpWriteVisibilityTest, PendingAdmissionTimesOutExactlyOnce) {
+    SKIP_UNLESS_ASIO_BACKEND();
     constexpr size_t kLength = 64 * 1024;
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     ScopedEnvVar queue_capacity("MC_TCP_MAX_QUEUED_TRANSFERS_PER_PEER", "1");
@@ -3033,6 +3070,7 @@ TEST(TcpWriteVisibilityTest, PendingAdmissionTimesOutExactlyOnce) {
 }
 
 TEST(TcpWriteVisibilityTest, PendingAdmissionsPromoteInFifoOrder) {
+    SKIP_UNLESS_ASIO_BACKEND();
     constexpr int kRequestCount = 4;
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     ScopedEnvVar queue_capacity("MC_TCP_MAX_QUEUED_TRANSFERS_PER_PEER", "1");
@@ -3087,6 +3125,7 @@ TEST(TcpWriteVisibilityTest, PendingAdmissionsPromoteInFifoOrder) {
 }
 
 TEST(TcpWriteVisibilityTest, PendingAdmissionHardBoundRejectsImmediately) {
+    SKIP_UNLESS_ASIO_BACKEND();
     constexpr int kRequestCount = 3;
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     ScopedEnvVar queue_capacity("MC_TCP_MAX_QUEUED_TRANSFERS_PER_PEER", "1");
@@ -3151,6 +3190,7 @@ TEST(TcpWriteVisibilityTest, PendingAdmissionHardBoundRejectsImmediately) {
 
 TEST(TcpWriteVisibilityTest,
      ShutdownWithPendingAdmissionsAndArmedTimerCompletesOnce) {
+    SKIP_UNLESS_ASIO_BACKEND();
     constexpr size_t kLength = 64 * 1024;
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     ScopedEnvVar queue_capacity("MC_TCP_MAX_QUEUED_TRANSFERS_PER_PEER", "1");
@@ -3210,6 +3250,7 @@ TEST(TcpWriteVisibilityTest,
 
 TEST(TcpWriteVisibilityTest,
      AdmissionTimeoutWinsBeforeCapacityReleasePreservesOneOwner) {
+    SKIP_UNLESS_ASIO_BACKEND();
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     ScopedEnvVar queue_capacity("MC_TCP_MAX_QUEUED_TRANSFERS_PER_PEER", "1");
     ScopedEnvVar pending_capacity("MC_TCP_MAX_PENDING_ADMISSIONS_PER_PEER",
@@ -3277,6 +3318,7 @@ TEST(TcpWriteVisibilityTest,
 
 TEST(TcpWriteVisibilityTest,
      CapacityReleasePromotesBeforeDeadlineAndCancelledTimerIsLate) {
+    SKIP_UNLESS_ASIO_BACKEND();
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     ScopedEnvVar queue_capacity("MC_TCP_MAX_QUEUED_TRANSFERS_PER_PEER", "1");
     ScopedEnvVar pending_capacity("MC_TCP_MAX_PENDING_ADMISSIONS_PER_PEER",
@@ -3365,6 +3407,7 @@ TEST(TcpWriteVisibilityTest,
 
 TEST(TcpWriteVisibilityTest,
      ConcurrentAdmissionShutdownStressPreservesLaneOwnership) {
+    SKIP_UNLESS_ASIO_BACKEND();
     constexpr size_t kSubmissionCount = 40;
     constexpr size_t kSubmitterCount = 4;
     constexpr size_t kQueueCapacity = 8;
@@ -3464,6 +3507,7 @@ TEST(TcpWriteVisibilityTest,
 
 TEST(TcpWriteVisibilityTest,
      ProgressTimeoutWinsAgainstQueuedFinalReadCompletion) {
+    SKIP_UNLESS_ASIO_BACKEND();
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     ScopedEnvVar progress_timeout("MC_TCP_PROGRESS_TIMEOUT_SEC", "30");
     ScopedLaneHooks lane_hooks;
@@ -3504,6 +3548,7 @@ TEST(TcpWriteVisibilityTest,
 
 TEST(TcpWriteVisibilityTest,
      ProgressTimeoutWinsAgainstQueuedFinalWriteAndAckCompletion) {
+    SKIP_UNLESS_ASIO_BACKEND();
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     ScopedEnvVar progress_timeout("MC_TCP_PROGRESS_TIMEOUT_SEC", "30");
     ScopedLaneHooks lane_hooks;
@@ -3541,6 +3586,7 @@ TEST(TcpWriteVisibilityTest,
 }
 
 TEST(TcpWriteVisibilityTest, ProgressBeforeDeadlineMakesOldTimerStale) {
+    SKIP_UNLESS_ASIO_BACKEND();
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     ScopedEnvVar progress_timeout("MC_TCP_PROGRESS_TIMEOUT_SEC", "30");
     ScopedSessionProgressHooks session_hooks(
@@ -3568,6 +3614,7 @@ TEST(TcpWriteVisibilityTest, ProgressBeforeDeadlineMakesOldTimerStale) {
 
 TEST(TcpWriteVisibilityTest,
      ProgressTimeoutWaitsForOutstandingWriteBeforeTerminal) {
+    SKIP_UNLESS_ASIO_BACKEND();
     constexpr size_t kRequestSize = 64ull << 20;
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     ScopedEnvVar progress_timeout("MC_TCP_PROGRESS_TIMEOUT_SEC", "1");
@@ -3614,6 +3661,7 @@ TEST(TcpWriteVisibilityTest,
 }
 
 TEST(TcpWriteVisibilityTest, WritePayloadNoProgressFailsWithinBoundedDeadline) {
+    SKIP_UNLESS_ASIO_BACKEND();
     constexpr size_t kRequestSize = 64ull << 20;
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     ScopedEnvVar status_timeout("MC_TCP_STATUS_TIMEOUT_SEC", "1");
@@ -3657,6 +3705,7 @@ TEST(TcpWriteVisibilityTest, WritePayloadNoProgressFailsWithinBoundedDeadline) {
 
 TEST(TcpWriteVisibilityTest,
      WritePayloadPartialProgressThenStallFailsWithinBoundedDeadline) {
+    SKIP_UNLESS_ASIO_BACKEND();
     constexpr size_t kRequestSize = 64ull << 20;
     constexpr size_t kObservedPayloadProgress = 128ull << 10;
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
@@ -3702,6 +3751,7 @@ TEST(TcpWriteVisibilityTest,
 }
 
 TEST(TcpWriteVisibilityTest, ShutdownWithArmedProgressDeadlineCompletesOnce) {
+    SKIP_UNLESS_ASIO_BACKEND();
     constexpr size_t kRequestSize = 64ull << 20;
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     ScopedEnvVar progress_timeout("MC_TCP_PROGRESS_TIMEOUT_SEC", "10");
@@ -3774,6 +3824,7 @@ TEST(TcpWriteVisibilityTest, EndpointRefreshRoutesNewWorkToNewTcpEndpoint) {
 
 TEST(TcpWriteVisibilityTest,
      ConcurrentEndpointRefreshNeverCombinesHostAndPortSnapshots) {
+    SKIP_UNLESS_ASIO_BACKEND();
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     LocalHttpMetadataServer metadata_server;
     ReusingWriteServer endpoint_a(false, "127.0.0.1");
@@ -3837,6 +3888,7 @@ TEST(TcpWriteVisibilityTest,
 }
 
 TEST(TcpWriteVisibilityTest, EndpointRefreshRetiresOldTcpGroup) {
+    SKIP_UNLESS_ASIO_BACKEND();
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     LocalHttpMetadataServer metadata_server;
     ReusingWriteServer endpoint_a;
@@ -3922,6 +3974,7 @@ TEST(TcpWriteVisibilityTest, SharedEndpointOnePeerMovesDoesNotRetireOtherPeer) {
 }
 
 TEST(TcpWriteVisibilityTest, EndpointChangesAtoBtoCWithoutLeakingOldGroups) {
+    SKIP_UNLESS_ASIO_BACKEND();
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     LocalHttpMetadataServer metadata_server;
     ReusingWriteServer endpoint_a;
@@ -3957,6 +4010,7 @@ TEST(TcpWriteVisibilityTest, EndpointChangesAtoBtoCWithoutLeakingOldGroups) {
 }
 
 TEST(TcpWriteVisibilityTest, EndpointRetirementRacesWithBusyCompletion) {
+    SKIP_UNLESS_ASIO_BACKEND();
     ScopedEnvVar lanes("MC_TCP_LANES_PER_PEER", "1");
     LocalHttpMetadataServer metadata_server;
     ReusingWriteServer endpoint_a(/*hold_first_ack=*/true);

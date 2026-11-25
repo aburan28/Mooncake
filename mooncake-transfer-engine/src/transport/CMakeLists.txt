@@ -21,6 +21,11 @@ if(USE_TCP)
   target_sources(transport PUBLIC $<TARGET_OBJECTS:tcp_transport>)
 endif()
 
+if(USE_DPDK)
+  add_subdirectory(dpdk_transport)
+  target_sources(transport PUBLIC $<TARGET_OBJECTS:dpdk_transport>)
+endif()
+
 if(USE_BAREX)
   add_subdirectory(barex_transport)
   target_sources(transport PUBLIC $<TARGET_OBJECTS:barex_transport>)

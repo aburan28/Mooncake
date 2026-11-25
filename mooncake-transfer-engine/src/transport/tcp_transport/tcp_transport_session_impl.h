@@ -17,36 +17,10 @@
 // transport entry points and the lane scheduler independently reviewable
 // without changing linkage or lifetime behavior.
 
-static size_t getChunkSize() {
-    static const size_t val = [] {
-        const char* env = std::getenv("MC_TCP_SLICE_SIZE");
-        if (env) {
-            try {
-                size_t v = std::stoull(env);
-                if (v > 0) return v;
-                LOG(WARNING)
-                    << "Ignore non-positive MC_TCP_SLICE_SIZE value: " << env
-                    << ", using default 65536";
-            } catch (const std::exception& e) {
-                // A non-numeric or out-of-range value makes std::stoull throw;
-                // fall through to the default instead of letting the exception
-                // propagate out of this static initializer and abort the
-                // transfer that first reads the chunk size.
-                LOG(WARNING)
-                    << "Invalid MC_TCP_SLICE_SIZE value: " << env
-                    << ". Error: " << e.what() << ", using default 65536";
-            }
-        }
-        return size_t(65536);  // 64KB default
-    }();
-    return val;
-}
-
-struct SessionHeader {
-    uint64_t size;
-    uint64_t addr;
-    uint8_t opcode;
-};
+// Wire format and tunables live in tcp_wire.h so that the io_uring backend
+// stays byte-compatible with this asio implementation.
+using tcp_wire::getChunkSize;
+using tcp_wire::SessionHeader;
 
 #if defined(USE_CUDA) || defined(USE_MUSA) || defined(USE_HIP) ||  \
     defined(USE_MLU) || defined(USE_MACA) || defined(USE_HYGON) || \
@@ -115,30 +89,16 @@ using ValidateAddrFn = std::function<bool(uint64_t, uint64_t)>;
 // applied to destination memory. Initiators enable v2 only when the target
 // segment advertises tcp_proto_version >= 2, so old servers never see
 // flagged opcodes and old initiators keep receiving v1 framing.
-static constexpr uint8_t kOpcodeV2Flag = 0x80;
-// Status frames carry a magic in the high 32 bits so that a v2 initiator
-// which reaches a v1 server through a stale descriptor (v1 treats unknown
-// opcodes as READ and immediately streams payload bytes) fails fast on the
-// first frame instead of misinterpreting the stream. Residual risk: payload
-// bytes that happen to equal a valid frame (2^-64 per request, data
-// dependent) are indistinguishable in-band; eliminating that would need a
-// nonce/checksum handshake, which this deliberately avoids.
-static constexpr uint64_t kStatusMagic = 0x4D435456ull << 32;  // "MCTV"
-static constexpr uint64_t kStatusOk = kStatusMagic | 0;
-static constexpr uint64_t kStatusAddrRejected = kStatusMagic | 1;
-static inline bool statusFrameValid(uint64_t frame) {
-    return (frame & 0xFFFFFFFF00000000ull) == kStatusMagic;
-}
+using tcp_wire::kOpcodeV2Flag;
+using tcp_wire::kStatusAddrRejected;
+using tcp_wire::kStatusMagic;
+using tcp_wire::kStatusOk;
+using tcp_wire::statusFrameValid;
 
 // Operational escape hatch: MC_TCP_PROTO=1 forces initiators to speak the
 // legacy unacknowledged framing even to v2-capable servers. Also used by
 // tests to cover the mixed-version matrix in one process.
-static bool forceLegacyTcpProto() {
-    // Read per call (startTransfer already does metadata lookups; getenv is
-    // noise) so tests can cover both protocol modes in one process.
-    const char* env = std::getenv("MC_TCP_PROTO");
-    return env && env[0] == '1' && env[1] == '\0';
-}
+using tcp_wire::forceLegacyTcpProto;
 
 // Server-side session: handles transfer requests on a persistent connection.
 // The session owns the socket; ending the callback chain without rearming

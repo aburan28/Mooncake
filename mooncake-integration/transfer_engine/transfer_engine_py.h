@@ -131,6 +131,16 @@ class TransferEnginePy {
 
     int getBatchTransferStatus(const std::vector<batch_id_t> &batch_ids);
 
+    // Non-blocking status of batches issued by batchTransferAsync: one entry
+    // per id, 0 = completed, 1 = in flight, -1 = failed, timed out or unknown.
+    // Never frees a batch; pair with batchTransferFree.
+    std::vector<int> batchTransferPoll(
+        const std::vector<batch_id_t> &batch_ids);
+
+    // Frees batches issued by batchTransferAsync once they are no longer in
+    // flight. Unknown or already freed ids are ignored.
+    void batchTransferFree(const std::vector<batch_id_t> &batch_ids);
+
 #ifdef USE_CUDA
     void batchTransferOnCuda(
         const char *target_hostname, const std::vector<uintptr_t> &buffers,
@@ -221,6 +231,10 @@ class TransferEnginePy {
     std::unordered_set<char *> large_buffer_list_;
     std::unordered_map<std::string, Transport::SegmentHandle> handle_map_;
     bool auto_discovery_;
+
+    // Batches issued by batchTransferAsync that have not been freed yet.
+    std::mutex batch_mutex_;
+    std::unordered_set<batch_id_t> async_batches_;
 
     uint64_t transfer_timeout_nsec_;
 };

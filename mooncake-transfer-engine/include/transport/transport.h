@@ -200,6 +200,11 @@ class Transport {
             struct {
                 uint64_t dest_offset;
             } flagcx;
+            struct {
+                uint64_t dest_addr;
+                uint32_t seq_base;  // first MKTP sequence number of the slice
+                uint32_t flags;
+            } dpdk;
         };
 
        public:

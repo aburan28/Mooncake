@@ -89,6 +89,9 @@ option(USE_COREX "option for enabling gpu features for Iluvatar CoreX" OFF)
 option(USE_SUPA "option for enabling gpu features for Biren GPU with SUPA" OFF)
 option(USE_NVMEOF "option for using NVMe over Fabric" OFF)
 option(USE_TCP "option for using TCP transport" ON)
+option(USE_IOURING_TCP
+       "option for the io_uring data-plane backend of the TCP transport" ON)
+option(USE_DPDK "option for the DPDK/AF_XDP kernel-bypass transport" OFF)
 option(USE_BAREX "option for using accl-barex transport" OFF)
 option(USE_ASCEND "option for using npu with HCCL" OFF)
 option(USE_ASCEND_DIRECT "option for using ascend npu with adxl engine" OFF)
@@ -559,6 +562,10 @@ endif()
 
 if(USE_TCP)
   add_compile_definitions(USE_TCP)
+endif()
+
+if(USE_DPDK)
+  add_compile_definitions(USE_DPDK)
 endif()
 
 if(USE_BAREX)

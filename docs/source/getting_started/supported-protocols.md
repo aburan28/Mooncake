@@ -20,6 +20,7 @@ Mooncake Transfer Engine supports multiple communication protocols for data tran
 | **tpu** | Google TPU (PJRT) | TPU KV-cache transfer via host-DRAM staging | 🧪 Experimental (TENT) |
 | **mpcomm** | RDMA-capable NIC(s) | Multi-NIC memory pooling with NIC/QP load balancing | ⚠️ Advanced (TENT) |
 | **flagcx** | RDMA-capable NIC(s) | Unified P2P transfer through FlagOS FlagCX | ⚠️ Advanced |
+| **dpdk** | DPDK poll-mode driver or AF_XDP-capable NIC | Kernel-bypass UDP transport for NICs without RDMA | 🧪 Experimental |
 
 ## Commonly Used Protocols (Python API)
 
@@ -57,6 +58,23 @@ export MOONCAKE_PROTOCOL="tcp"
 - Lower throughput compared to RDMA
 - Higher CPU overhead
 - Higher latency
+
+**io_uring backend:** builds with `-DUSE_IOURING_TCP=ON` (the default when
+liburing is installed) can drive the `tcp` transport's data plane through
+io_uring instead of asio. Select it per process with
+`MC_TCP_IO_BACKEND=io_uring`; the wire format is unchanged, so an io_uring
+peer talks to an asio peer and vice versa, and the protocol string stays
+`"tcp"`. `mooncake.engine.SUPPORT_IOURING_TCP` reports whether the backend
+is compiled in; a build without it logs a warning and keeps asio. The kernel
+must allow `io_uring_setup` (the default Docker seccomp profile blocks it).
+
+```bash
+export MOONCAKE_PROTOCOL="tcp"
+export MC_TCP_IO_BACKEND="io_uring"   # asio (default) or io_uring
+```
+
+See the [io_uring and kernel-bypass plan](../design/transfer-engine/io_uring_kernel_bypass_plan.md)
+for the `MC_TCP_*` tuning knobs.
 
 ### RDMA (Recommended for Production)
 
@@ -172,6 +190,44 @@ cmake .. -DUSE_EFA=ON -DUSE_CUDA=ON
 ## Advanced Protocols (C++ Transfer Engine)
 
 The following protocols are available at the C++ Transfer Engine level for specialized use cases. They are not commonly used through the Python API.
+
+### DPDK / AF_XDP Transport (dpdk) — Experimental
+
+**Description:** Kernel-bypass transport that moves registered memory over
+UDP carried by DPDK poll-mode drivers (or the AF_XDP PMD on the primary
+interface) with a receiver-driven reliable protocol. It targets NICs that have
+neither RDMA nor header/data split; on RDMA-capable NICs use `rdma` instead.
+The transport coexists with `tcp`/`rdma` and is only selected for peers whose
+segment advertises `dpdk`.
+
+**Status:** Experimental. The build option `-DUSE_DPDK=ON` (pkg-config
+`libdpdk`) compiles the transport; `mooncake.engine.SUPPORT_DPDK` reports
+whether it is present. The data plane is being developed following the
+[io_uring and kernel-bypass plan](../design/transfer-engine/io_uring_kernel_bypass_plan.md).
+
+**Requirements:**
+- Built with `-DUSE_DPDK=ON`
+- Hugepages and either a port bound to `vfio-pci`, an mlx5 port with flow
+  bifurcation, or an AF_XDP-capable interface
+- `MC_DPDK_PORTS` set to the port to use; the Transfer Engine installs the
+  transport automatically when the variable is present, and the Python
+  `initialize(..., protocol="dpdk", ...)` call refuses to start without it
+
+**Configuration:**
+```python
+engine.initialize(
+    hostname="node1",
+    metadata_server="P2PHANDSHAKE",
+    protocol="dpdk",
+    device_name=""
+)
+```
+
+```bash
+export MC_DPDK_PORTS="0000:3b:00.0"        # or net_af_xdp,iface=eth0
+export MC_DPDK_LCORES="2,3"                # optional polling cores
+export MC_DPDK_EAL_ARGS="--in-memory"      # optional extra EAL arguments
+```
 
 ### NVMe over Fabric (nvmeof)
 

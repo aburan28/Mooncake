@@ -1,0 +1,80 @@
+# Hardware validation for the TCP zero-copy (io_uring zcrx / devmem TCP) and
+# DPDK data paths. These paths cannot run on GitHub-hosted runners: they need
+# a NIC with header/data split and flow steering (zcrx) or a DPDK-bound port.
+# The job is dispatch-only until self-hosted runners with the `datapath-hw`
+# label exist; the schedule below is a placeholder to enable once they do.
+name: nightly-datapath-hw
+
+on:
+  workflow_dispatch:
+    inputs:
+      zc_iface:
+        description: Interface for zero-copy RX queues (MC_TCP_ZC_IFACE)
+        required: false
+        default: ""
+      zc_rxqs:
+        description: Comma-separated RX queue ids steered to zero copy
+        required: false
+        default: ""
+      dpdk_ports:
+        description: MC_DPDK_PORTS value (PCI address or vdev string)
+        required: false
+        default: ""
+
+jobs:
+  zero-copy-tcp:
+    if: ${{ inputs.zc_iface != '' }}
+    runs-on: [self-hosted, datapath-hw]
+    env:
+      MC_METADATA_SERVER: "P2PHANDSHAKE"
+      MC_FORCE_TCP: "1"
+      MC_TCP_IO_BACKEND: "io_uring"
+      MC_TCP_ZC: "1"
+      MC_TCP_ZC_IFACE: ${{ inputs.zc_iface }}
+      MC_TCP_ZC_RXQS: ${{ inputs.zc_rxqs }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build
+        run: |
+          mkdir build-hw && cd build-hw
+          cmake -G Ninja .. -DUSE_TCP=ON -DUSE_IOURING_TCP=ON -DUSE_CUDA=ON \
+            -DWITH_STORE=OFF -DWITH_STORE_RUST=OFF -DWITH_EP=OFF \
+            -DBUILD_UNIT_TESTS=ON -DBUILD_EXAMPLES=ON -DBUILD_BENCHMARK=OFF
+          cmake --build . --target transfer_engine tcp_uring_backend_test \
+            transfer_engine_bench
+      - name: Steer zero-copy queues
+        run: sudo ./scripts/setup_tcp_zerocopy.sh "$MC_TCP_ZC_IFACE" "$MC_TCP_ZC_RXQS"
+      - name: Zero-copy self test
+        run: build-hw/mooncake-transfer-engine/tests/tcp_uring_backend_test
+      - name: Bandwidth (4 MiB blocks)
+        run: |
+          build-hw/mooncake-transfer-engine/example/transfer_engine_bench \
+            --mode=target --metadata_server=P2PHANDSHAKE --protocol=tcp \
+            --local_server_name=127.0.0.1:14000 &
+          sleep 2
+          build-hw/mooncake-transfer-engine/example/transfer_engine_bench \
+            --mode=initiator --metadata_server=P2PHANDSHAKE --protocol=tcp \
+            --segment_id=127.0.0.1:14000 --block_size=4194304 --duration=20
+
+  dpdk:
+    if: ${{ inputs.dpdk_ports != '' }}
+    runs-on: [self-hosted, datapath-hw]
+    env:
+      MC_METADATA_SERVER: "P2PHANDSHAKE"
+      MC_DPDK_PORTS: ${{ inputs.dpdk_ports }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build
+        run: |
+          mkdir build-hw && cd build-hw
+          cmake -G Ninja .. -DUSE_TCP=ON -DUSE_DPDK=ON -DUSE_CUDA=OFF \
+            -DWITH_STORE=OFF -DWITH_STORE_RUST=OFF -DWITH_EP=OFF \
+            -DBUILD_UNIT_TESTS=ON -DBUILD_EXAMPLES=ON -DBUILD_BENCHMARK=OFF
+          cmake --build . --target transfer_engine dpdk_transport_test \
+            transfer_engine_bench
+      - name: DPDK transport test
+        run: build-hw/mooncake-transfer-engine/tests/dpdk_transport_test

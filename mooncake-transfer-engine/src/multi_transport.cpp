@@ -28,6 +28,9 @@
 #ifdef USE_TCP
 #include "transport/tcp_transport/tcp_transport.h"
 #endif
+#ifdef USE_DPDK
+#include "transport/dpdk_transport/dpdk_transport.h"
+#endif
 #include "transport/transport.h"
 #ifdef USE_NVMEOF
 #include "transport/nvmeof_transport/nvmeof_transport.h"
@@ -446,6 +449,11 @@ Transport* MultiTransport::installTransport(const std::string& proto,
         transport = new TcpTransport();
     }
 #endif
+#ifdef USE_DPDK
+    else if (std::string(proto) == "dpdk") {
+        transport = new DpdkTransport();
+    }
+#endif
 #ifdef USE_NVMEOF
     else if (std::string(proto) == "nvmeof") {
         transport = new NVMeoFTransport();
@@ -599,11 +607,12 @@ Status MultiTransport::selectTransport(const TransferRequest& entry,
             // hip is intra-node GPU-IPC only. On a cross-node request a
             // hip+rdma segment must fall through to rdma; allow deployments
             // that know they need the cross-node path to de-prioritize hip.
-            if (p == "hip") return std::getenv("MC_DISABLE_HIP") ? 0 : 4;
-            if (p == "maca") return std::getenv("MC_DISABLE_MACA") ? 0 : 4;
-            if (p == "musa") return std::getenv("MC_DISABLE_MUSA") ? 0 : 4;
-            if (p == "cxl") return 3;
-            if (p == "rdma") return 2;
+            if (p == "hip") return std::getenv("MC_DISABLE_HIP") ? 0 : 5;
+            if (p == "maca") return std::getenv("MC_DISABLE_MACA") ? 0 : 5;
+            if (p == "musa") return std::getenv("MC_DISABLE_MUSA") ? 0 : 5;
+            if (p == "cxl") return 4;
+            if (p == "rdma") return 3;
+            if (p == "dpdk") return 2;
             if (p == "tcp") return 1;
             return 0;
         };
